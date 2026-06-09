@@ -6,57 +6,52 @@ struct AccountView: View {
     @State private var syncIntervalMinutes = AppSettings.shared.syncIntervalMinutes
     @State private var showClearLogsAlert = false
     @State private var showSignOutAlert = false
+    @State private var showResetAlert = false
     @State private var serverOnline: Bool? = nil
     @State private var isCheckingServer = false
 
     var body: some View {
         NavigationStack {
-            List {
-                userSection
+            Form {
+                profileSection
                 syncSection
-                statusSection
+                serverSection
                 historySection
-                aboutSection
+                dangerSection
             }
-            .listStyle(.insetGrouped)
             .navigationTitle("Account")
             .navigationBarTitleDisplayMode(.large)
         }
     }
 
-    // MARK: - User Section
+    // MARK: - Profile
 
-    private var userSection: some View {
+    private var profileSection: some View {
         Section {
-            HStack(spacing: 14) {
-                avatarView
-                VStack(alignment: .leading, spacing: 3) {
+            HStack(spacing: 12) {
+                ZStack {
+                    Circle()
+                        .fill(Color.accentColor.opacity(0.15))
+                        .frame(width: 48, height: 48)
+                    Text(auth.avatarInitials.isEmpty ? "?" : auth.avatarInitials)
+                        .font(.system(size: 18, weight: .semibold, design: .rounded))
+                        .foregroundStyle(Color.accentColor)
+                }
+                VStack(alignment: .leading, spacing: 2) {
                     Text(auth.displayName)
-                        .font(.system(size: 17, weight: .semibold))
+                        .font(.headline)
                     if !auth.displayEmail.isEmpty {
                         Text(auth.displayEmail)
                             .font(.subheadline)
                             .foregroundStyle(.secondary)
                     }
                 }
-                Spacer()
             }
             .padding(.vertical, 6)
         }
     }
 
-    private var avatarView: some View {
-        ZStack {
-            Circle()
-                .fill(Color.red.opacity(0.12))
-                .frame(width: 52, height: 52)
-            Text(auth.avatarInitials.isEmpty ? "?" : auth.avatarInitials)
-                .font(.system(size: 20, weight: .bold, design: .rounded))
-                .foregroundStyle(.red)
-        }
-    }
-
-    // MARK: - Sync Section
+    // MARK: - Sync
 
     private var syncSection: some View {
         Section("Sync") {
@@ -79,64 +74,75 @@ struct AccountView: View {
                     Label("Sync Now", systemImage: "arrow.triangle.2.circlepath")
                     Spacer()
                     if syncService.isSyncing {
-                        ProgressView().scaleEffect(0.8)
+                        ProgressView()
                     }
                 }
             }
             .disabled(syncService.isSyncing)
 
             if let lastSync = syncService.lastSyncDate {
-                HStack {
-                    Label("Last Synced", systemImage: "checkmark.circle")
-                        .foregroundStyle(.secondary)
-                    Spacer()
+                LabeledContent("Last Synced") {
                     Text(lastSync, style: .relative)
-                        .font(.subheadline)
                         .foregroundStyle(.secondary)
                 }
             }
         }
     }
 
-    // MARK: - Status Section
+    // MARK: - Server
 
-    private var statusSection: some View {
+    private var serverSection: some View {
         Section {
             HStack {
                 Label("Server", systemImage: "server.rack")
                 Spacer()
                 if isCheckingServer {
-                    ProgressView().scaleEffect(0.8)
+                    ProgressView()
                 } else if let online = serverOnline {
-                    Image(systemName: online ? "checkmark.circle.fill" : "xmark.circle.fill")
+                    Label(online ? "Connected" : "Unreachable",
+                          systemImage: online ? "checkmark.circle.fill" : "xmark.circle.fill")
                         .foregroundStyle(online ? .green : .red)
-                    Text(online ? "Connected" : "Unreachable")
                         .font(.subheadline)
-                        .foregroundStyle(.secondary)
                 } else {
-                    Text("—")
+                    Text("Tap to check")
                         .foregroundStyle(.secondary)
+                        .font(.subheadline)
                 }
             }
             .contentShape(Rectangle())
             .onTapGesture { Task { await checkServer() } }
-            .onAppear { Task { await checkServer() } }
+        } footer: {
+            Text("Tap to check server connectivity.")
         }
+        .task { await checkServer() }
     }
 
-    // MARK: - History Section
+    // MARK: - History
 
     @ViewBuilder
     private var historySection: some View {
         Section("History") {
-            let logs = syncService.recentLogs
-            if logs.isEmpty {
+            if syncService.recentLogs.isEmpty {
                 Text("No sync history yet")
                     .foregroundStyle(.secondary)
-                    .font(.subheadline)
             } else {
-                ForEach(logs.prefix(5)) { log in
-                    RecentLogRow(log: log)
+                ForEach(syncService.recentLogs.prefix(5)) { log in
+                    LabeledContent {
+                        VStack(alignment: .trailing, spacing: 2) {
+                            Text("\(log.recordsSynced) records")
+                                .font(.subheadline)
+                            Text(log.formattedDate)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    } label: {
+                        Label {
+                            Text(log.type.rawValue)
+                        } icon: {
+                            Image(systemName: log.statusIcon)
+                                .foregroundStyle(log.statusColor)
+                        }
+                    }
                 }
                 NavigationLink {
                     LogsView()
@@ -147,23 +153,32 @@ struct AccountView: View {
         }
     }
 
-    // MARK: - About Section
+    // MARK: - Danger Zone
 
-    private var aboutSection: some View {
-        Section("About") {
-            HStack {
-                Label("Version", systemImage: "info.circle")
-                    .foregroundStyle(.secondary)
-                Spacer()
-                Text(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0")
-                    .foregroundStyle(.secondary)
-                    .font(.subheadline)
+    private var dangerSection: some View {
+        Section {
+            LabeledContent("Version",
+                value: Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0")
+
+            Button(role: .destructive) {
+                showResetAlert = true
+            } label: {
+                Label("Reset & Full Sync from Scratch", systemImage: "arrow.counterclockwise.icloud")
+            }
+            .disabled(syncService.isSyncing)
+            .alert("Reset All Health Data?", isPresented: $showResetAlert) {
+                Button("Reset & Sync", role: .destructive) {
+                    Task { await syncService.resetAndSyncFromScratch() }
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("Deletes all health data from the server and re-syncs everything from Apple Health. Use this to fix accuracy issues.")
             }
 
             Button(role: .destructive) {
                 showClearLogsAlert = true
             } label: {
-                Label("Clear History", systemImage: "trash")
+                Label("Clear Sync History", systemImage: "trash")
             }
             .alert("Clear History?", isPresented: $showClearLogsAlert) {
                 Button("Clear", role: .destructive) { syncService.clearLogs() }
@@ -183,6 +198,8 @@ struct AccountView: View {
             } message: {
                 Text("You will need to sign in again to sync your data.")
             }
+        } footer: {
+            Text("Resetting will re-sync up to 30 days of Apple Health data.")
         }
     }
 
@@ -192,49 +209,6 @@ struct AccountView: View {
         isCheckingServer = true
         serverOnline = await APIClient.shared.checkHealth()
         isCheckingServer = false
-    }
-}
-
-// MARK: - Recent Log Row
-
-private struct RecentLogRow: View {
-    let log: SyncLog
-
-    private var statusColor: Color {
-        switch log.status {
-        case .success: return .green
-        case .failed: return .red
-        case .partial: return .orange
-        case .running: return .blue
-        }
-    }
-
-    var body: some View {
-        HStack(spacing: 10) {
-            Image(systemName: log.statusIcon)
-                .foregroundStyle(statusColor)
-                .font(.system(size: 14))
-                .frame(width: 20)
-
-            VStack(alignment: .leading, spacing: 1) {
-                Text(log.type.rawValue)
-                    .font(.system(size: 14, weight: .medium))
-                Text(log.formattedDate)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-            }
-
-            Spacer()
-
-            VStack(alignment: .trailing, spacing: 1) {
-                Text("\(log.recordsSynced)")
-                    .font(.system(size: 13, weight: .semibold, design: .rounded))
-                Text("records")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-            }
-        }
-        .padding(.vertical, 2)
     }
 }
 

@@ -33,6 +33,11 @@ final class AuthService {
         persist(apiKey: response.apiKey, id: response.id, name: response.name, email: response.email)
     }
 
+    func signUp(name: String, email: String, password: String) async throws {
+        let response = try await APIClient.shared.register(name: name, email: email, password: password)
+        persist(apiKey: response.apiKey, id: response.id, name: response.name, email: response.email)
+    }
+
     func signOut() {
         apiKey = ""
         userId = nil

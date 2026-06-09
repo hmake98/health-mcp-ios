@@ -16,6 +16,7 @@ final class SyncService {
     private let healthKit = HealthKitService.shared
     private let api = APIClient.shared
     private let logStore = SyncLogStore.shared
+    private var observersRegistered = false
 
     init() {
         recentLogs = Array(logStore.load().suffix(20).reversed())
@@ -31,12 +32,15 @@ final class SyncService {
         logStore.append(log)
         let startTime = Date()
 
+        // Always cover at least the last 2 days so HealthKit retroactive updates are captured.
+        let recentWindow = Calendar.current.date(byAdding: .day, value: -2, to: Date()) ?? Date()
+
         var totalSynced = 0
         var errors: [String] = []
 
         // Vitals
-        let vitalsStartDate = settings.lastVitalsSyncDate ?? settings.defaultSyncStartDate()
-        let vitals = await healthKit.fetchVitalRecords(since: vitalsStartDate)
+        let vitalsStart = min(settings.lastVitalsSyncDate ?? settings.defaultSyncStartDate(), recentWindow)
+        let vitals = await healthKit.fetchVitalRecords(since: vitalsStart)
         if !vitals.isEmpty {
             do {
                 let count = try await api.syncVitals(records: vitals)
@@ -52,8 +56,8 @@ final class SyncService {
         }
 
         // Sleep
-        let sleepStartDate = settings.lastSleepSyncDate ?? settings.defaultSyncStartDate()
-        let sleep = await healthKit.fetchSleepRecords(since: sleepStartDate)
+        let sleepStart = min(settings.lastSleepSyncDate ?? settings.defaultSyncStartDate(), recentWindow)
+        let sleep = await healthKit.fetchSleepRecords(since: sleepStart)
         if !sleep.isEmpty {
             do {
                 let count = try await api.syncSleep(records: sleep)
@@ -69,8 +73,8 @@ final class SyncService {
         }
 
         // Workouts
-        let workoutsStartDate = settings.lastWorkoutsSyncDate ?? settings.defaultSyncStartDate()
-        let workouts = await healthKit.fetchWorkoutRecords(since: workoutsStartDate)
+        let workoutsStart = min(settings.lastWorkoutsSyncDate ?? settings.defaultSyncStartDate(), recentWindow)
+        let workouts = await healthKit.fetchWorkoutRecords(since: workoutsStart)
         if !workouts.isEmpty {
             do {
                 let count = try await api.syncWorkouts(records: workouts)
@@ -85,7 +89,7 @@ final class SyncService {
             log.details.append(SyncDetail(type: .workouts, recordsSynced: 0))
         }
 
-        // Activity (always last 14 days — upserted by day on server)
+        // Activity — always last 14 days, upserted by day on server
         let activityRecords = await healthKit.fetchActivityRecords(forLast: 14)
         if !activityRecords.isEmpty {
             do {
@@ -100,7 +104,6 @@ final class SyncService {
             log.details.append(SyncDetail(type: .activity, recordsSynced: 0))
         }
 
-        // Finalize log
         log.durationSeconds = Date().timeIntervalSince(startTime)
         log.recordsSynced = totalSynced
         if errors.isEmpty {
@@ -123,22 +126,59 @@ final class SyncService {
 
     func scheduleBackgroundSync() {
         guard settings.syncIntervalMinutes > 0 else { return }
-
         let request = BGAppRefreshTaskRequest(identifier: Self.backgroundTaskIdentifier)
         request.earliestBeginDate = Date(timeIntervalSinceNow: Double(settings.syncIntervalMinutes) * 60)
-
         try? BGTaskScheduler.shared.submit(request)
     }
 
-    nonisolated func handleBackgroundSync(task: BGAppRefreshTask) {
-        task.expirationHandler = {
-            task.setTaskCompleted(success: false)
+    // Schedule a background task to run as soon as possible (called by HealthKit observers).
+    func scheduleImmediateBackgroundSync() {
+        let request = BGAppRefreshTaskRequest(identifier: Self.backgroundTaskIdentifier)
+        request.earliestBeginDate = nil // run ASAP
+        try? BGTaskScheduler.shared.submit(request)
+    }
+
+    // Register HKObserverQuery so iOS wakes the app when health data changes.
+    // Safe to call on every launch — guarded by observersRegistered flag.
+    func setupBackgroundObservers() {
+        guard !observersRegistered, HealthKitService.isAvailable else { return }
+        observersRegistered = true
+        HealthKitService.shared.enableBackgroundDelivery {
+            // Called on a HealthKit background thread — hop to main actor.
+            Task { @MainActor in
+                SyncService.shared.scheduleImmediateBackgroundSync()
+            }
         }
-        Task { @MainActor in
+    }
+
+    nonisolated func handleBackgroundSync(task: BGAppRefreshTask) {
+        let syncTask = Task { @MainActor in
             await SyncService.shared.syncNow()
             SyncService.shared.scheduleBackgroundSync()
             task.setTaskCompleted(success: true)
         }
+        // Cancel the in-flight task when iOS reclaims background time.
+        task.expirationHandler = {
+            syncTask.cancel()
+            task.setTaskCompleted(success: false)
+        }
+    }
+
+    // MARK: - Reset & Full Sync
+
+    func resetAndSyncFromScratch() async {
+        guard !isSyncing else { return }
+        isSyncing = true
+        do {
+            try await api.clearAllHealthData()
+        } catch {
+            // Server clear failed — still clear local state and re-sync from scratch
+        }
+        settings.clearSyncDates()
+        logStore.clear()
+        recentLogs = []
+        isSyncing = false
+        await syncNow()
     }
 
     // MARK: - Server Health Check

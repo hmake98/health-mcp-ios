@@ -3,11 +3,18 @@ import SwiftUI
 struct ContentView: View {
     @Environment(AuthService.self) private var auth
     @Environment(SyncService.self) private var syncService
+    @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
         if auth.isAuthenticated {
             mainTabs
-                .task { await requestHealthKitPermissions() }
+                .task { await setup() }
+                .onChange(of: scenePhase) { _, newPhase in
+                    if newPhase == .active {
+                        // Re-schedule on every foreground in case the task was consumed.
+                        syncService.scheduleBackgroundSync()
+                    }
+                }
         } else {
             LoginView()
         }
@@ -26,8 +33,15 @@ struct ContentView: View {
         }
     }
 
-    private func requestHealthKitPermissions() async {
+    // Runs once when the authenticated view first appears.
+    private func setup() async {
         guard HealthKitService.isAvailable else { return }
-        try? await HealthKitService.shared.requestAuthorization()
+        let settings = AppSettings.shared
+        if !settings.hasRequestedHKAuthorization {
+            try? await HealthKitService.shared.requestAuthorization()
+            settings.hasRequestedHKAuthorization = true
+        }
+        syncService.scheduleBackgroundSync()
+        syncService.setupBackgroundObservers()
     }
 }

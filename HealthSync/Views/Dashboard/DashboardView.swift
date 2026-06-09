@@ -4,242 +4,245 @@ struct DashboardView: View {
     @State private var data = DashboardData()
     @State private var isRefreshing = false
     @Environment(SyncService.self) private var syncService
-
-    private var insights: HealthInsights { HealthInsights(data: data) }
+    @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
         NavigationStack {
             ScrollView {
                 LazyVStack(spacing: 12) {
-                    overviewCard
-                    if data.sleepSummary != nil || !data.isLoading {
-                        sleepCard
-                    }
+                    syncStatusRow
                     activityCard
-                    heartCard
-                    recoveryCard
-                    stepsCard
+                    if data.hasHeartData {
+                        heartCard
+                    }
+                    if data.hasVitals {
+                        vitalsCard
+                    }
+                    if let sleep = data.sleepSummary {
+                        sleepCard(sleep)
+                    }
                     if !data.workouts.isEmpty {
                         workoutsCard
                     }
-                    if data.bloodOxygen > 0 || data.respiratoryRate > 0 {
-                        vitalsCard
-                    }
                 }
                 .padding(.horizontal, 16)
+                .padding(.top, 8)
                 .padding(.bottom, 32)
             }
-            .navigationTitle(insights.greeting)
+            .navigationTitle(greetingTitle)
             .navigationBarTitleDisplayMode(.large)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button {
                         Task { await refresh() }
                     } label: {
-                        if isRefreshing || syncService.isSyncing {
+                        if isRefreshing || data.isLoading {
                             ProgressView().scaleEffect(0.8)
                         } else {
                             Image(systemName: "arrow.clockwise")
                         }
                     }
-                    .disabled(isRefreshing || syncService.isSyncing)
+                    .disabled(isRefreshing || data.isLoading)
                 }
             }
             .refreshable { await refresh() }
         }
         .task { await loadData() }
+        .onChange(of: scenePhase) { _, newPhase in
+            if newPhase == .active && !isRefreshing {
+                Task { await loadData() }
+            }
+        }
     }
 
-    // MARK: - Overview Card
+    // MARK: - Greeting
 
-    private var overviewCard: some View {
-        HStack(spacing: 14) {
-            ZStack {
-                Circle()
-                    .fill(insights.overallStatus.color.opacity(0.15))
-                    .frame(width: 52, height: 52)
-                Image(systemName: overallIcon)
-                    .font(.system(size: 22))
-                    .foregroundStyle(insights.overallStatus.color)
-            }
-            VStack(alignment: .leading, spacing: 3) {
-                Text(insights.overallHeadline)
-                    .font(.system(size: 17, weight: .semibold))
-                if let lastSync = syncService.lastSyncDate {
-                    Text("Updated \(lastSync.relativeString)")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                } else if syncService.isSyncing {
-                    HStack(spacing: 5) {
-                        ProgressView().scaleEffect(0.65)
-                        Text("Syncing…").font(.caption).foregroundStyle(.secondary)
-                    }
-                } else {
-                    Text(Date(), style: .date)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
+    private var greetingTitle: String {
+        let hour = Calendar.current.component(.hour, from: Date())
+        if hour < 12 { return "Good Morning" }
+        if hour < 17 { return "Good Afternoon" }
+        return "Good Evening"
+    }
+
+    // MARK: - Sync Status Row
+
+    private var syncStatusRow: some View {
+        HStack(spacing: 10) {
+            Circle()
+                .fill(syncDotColor)
+                .frame(width: 8, height: 8)
+            if syncService.isSyncing {
+                Text("Syncing…").font(.caption).foregroundStyle(.secondary)
+            } else if let last = syncService.lastSyncDate {
+                Text("Updated \(last, style: .relative) ago").font(.caption).foregroundStyle(.secondary)
+            } else {
+                Text("Not yet synced").font(.caption).foregroundStyle(.secondary)
             }
             Spacer()
+            Text(Date(), style: .date).font(.caption2).foregroundStyle(.tertiary)
         }
-        .padding(16)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .padding(.horizontal, 4)
     }
 
-    private var overallIcon: String {
-        switch insights.overallStatus {
-        case .great: return "checkmark.seal.fill"
-        case .good: return "heart.fill"
-        case .fair: return "minus.circle.fill"
-        case .low: return "exclamationmark.circle.fill"
-        case .noData: return "ellipsis.circle.fill"
-        }
-    }
-
-    // MARK: - Sleep Card
-
-    private var sleepCard: some View {
-        InsightCard(
-            label: "Sleep",
-            icon: "moon.fill",
-            iconColor: .indigo,
-            insight: insights.sleep
-        ) {
-            if let sleep = data.sleepSummary {
-                VStack(spacing: 10) {
-                    SleepStagesView(summary: sleep)
-                }
-            }
-        }
+    private var syncDotColor: Color {
+        if syncService.isSyncing { return .blue }
+        guard let last = syncService.lastSyncDate else { return .secondary }
+        let age = Date().timeIntervalSince(last)
+        if age < 3600 { return .green }
+        if age < 14400 { return .yellow }
+        return .orange
     }
 
     // MARK: - Activity Card
 
     private var activityCard: some View {
-        InsightCard(
-            label: "Activity",
-            icon: "flame.fill",
-            iconColor: .red,
-            insight: insights.activity
-        ) {
-            ActivityRingsView(
-                moveProgress: data.moveProgress,
-                exerciseProgress: data.exerciseProgress,
-                standProgress: data.standProgress,
-                moveKcal: data.activeEnergyKcal,
-                exerciseMinutes: data.exerciseMinutes,
-                standHours: data.standHours,
-                moveGoal: data.moveGoal,
-                exerciseGoal: data.exerciseGoal,
-                standGoal: data.standGoal
-            )
+        DashCard(title: "Activity", icon: "flame.fill", iconColor: .red) {
+            VStack(spacing: 12) {
+                HStack(spacing: 0) {
+                    ActivityRingsView(
+                        moveProgress: data.moveProgress,
+                        exerciseProgress: data.exerciseProgress,
+                        standProgress: data.standProgress,
+                        moveKcal: data.activeEnergyKcal,
+                        exerciseMinutes: data.exerciseMinutes,
+                        standHours: data.standHours,
+                        moveGoal: data.moveGoal,
+                        exerciseGoal: data.exerciseGoal,
+                        standGoal: data.standGoal
+                    )
+                    Spacer()
+                }
+                Divider()
+                HStack(spacing: 16) {
+                    StatPill(label: "Steps", value: data.steps.formatted(), icon: "figure.walk")
+                    if data.distanceMeters > 0 {
+                        StatPill(label: "Distance", value: String(format: "%.1f km", data.distanceMeters / 1000), icon: "mappin")
+                    }
+                    if data.flightsClimbed > 0 {
+                        StatPill(label: "Flights", value: "\(data.flightsClimbed)", icon: "stairs")
+                    }
+                    Spacer()
+                }
+            }
         }
     }
 
     // MARK: - Heart Card
 
     private var heartCard: some View {
-        InsightCard(
-            label: "Heart Rate",
-            icon: "heart.fill",
-            iconColor: .red,
-            insight: insights.heart
-        ) {
-            HeartRateChartView(
-                samples: data.heartRateSamples,
-                current: data.currentHeartRate,
-                min: data.heartRateMin,
-                max: data.heartRateMax,
-                avg: data.heartRateAvg,
-                resting: data.restingHeartRate
-            )
-        }
-    }
-
-    // MARK: - Recovery Card
-
-    private var recoveryCard: some View {
-        InsightCard(
-            label: "Recovery",
-            icon: "bolt.heart.fill",
-            iconColor: .purple,
-            insight: insights.recovery
-        ) {
-            if data.heartRateVariability > 0 || data.restingHeartRate > 0 {
-                HStack(spacing: 0) {
-                    if data.heartRateVariability > 0 {
-                        RecoveryMetric(
-                            label: "HRV",
-                            value: "\(Int(data.heartRateVariability))",
-                            unit: "ms",
-                            note: hrvNote
+        DashCard(title: "Heart", icon: "heart.fill", iconColor: .red) {
+            VStack(spacing: 10) {
+                HStack(spacing: 12) {
+                    if let hr = data.freshHeartRate {
+                        HeartMetricTile(
+                            label: "Heart Rate",
+                            value: "\(Int(hr.value))",
+                            unit: "BPM",
+                            age: hr.ageString,
+                            color: heartRateColor(hr.value)
                         )
                     }
-                    if data.heartRateVariability > 0 && data.restingHeartRate > 0 {
-                        Divider().frame(height: 44).padding(.horizontal, 12)
-                    }
-                    if data.restingHeartRate > 0 {
-                        RecoveryMetric(
+                    if let rhr = data.freshRestingHR {
+                        HeartMetricTile(
                             label: "Resting HR",
-                            value: "\(Int(data.restingHeartRate))",
+                            value: "\(Int(rhr.value))",
                             unit: "BPM",
-                            note: rhrNote
+                            age: rhr.ageString,
+                            color: .secondary
+                        )
+                    }
+                    if let hrv = data.freshHRV {
+                        HeartMetricTile(
+                            label: "HRV",
+                            value: "\(Int(hrv.value))",
+                            unit: "ms",
+                            age: hrv.ageString,
+                            color: hrv.value >= 50 ? .green : hrv.value >= 30 ? .orange : .red
                         )
                     }
                     Spacer()
+                }
+                if !data.heartRateSamples.isEmpty {
+                    Divider()
+                    HeartRateChartView(
+                        samples: data.heartRateSamples,
+                        current: data.currentHeartRate,
+                        min: data.heartRateMin,
+                        max: data.heartRateMax,
+                        avg: data.heartRateAvg,
+                        resting: data.freshRestingHR?.value ?? 0
+                    )
                 }
             }
         }
     }
 
-    private var hrvNote: String {
-        let hrv = data.heartRateVariability
-        if hrv >= 50 { return "High — great sign" }
-        if hrv >= 30 { return "Moderate" }
-        return "Low — rest up"
+    private func heartRateColor(_ bpm: Double) -> Color {
+        if bpm < 50 || bpm > 120 { return .red }
+        if bpm > 100 { return .orange }
+        return .pink
     }
 
-    private var rhrNote: String {
-        let rhr = data.restingHeartRate
-        if rhr < 60 { return "Excellent" }
-        if rhr < 75 { return "Normal" }
-        return "Slightly elevated"
-    }
+    // MARK: - Vitals Card
 
-    // MARK: - Steps Card
-
-    private var stepsCard: some View {
-        InsightCard(
-            label: "Steps",
-            icon: "figure.walk",
-            iconColor: .orange,
-            insight: insights.steps
-        ) {
-            VStack(spacing: 8) {
-                HStack(alignment: .firstTextBaseline, spacing: 4) {
-                    Text(data.steps.formatted())
-                        .font(.system(size: 28, weight: .bold, design: .rounded))
-                    Text("/ \(data.stepGoal.formatted()) steps")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                    Spacer()
+    private var vitalsCard: some View {
+        DashCard(title: "Vitals", icon: "waveform.path.ecg", iconColor: .teal) {
+            HStack(spacing: 16) {
+                if let o2 = data.freshBloodOxygen {
+                    VitalMetricTile(
+                        icon: "lungs.fill",
+                        label: "Blood O₂",
+                        value: String(format: "%.0f%%", o2.value),
+                        age: o2.ageString,
+                        note: o2.value >= 95 ? "Normal" : "Below normal",
+                        color: o2.value >= 95 ? .blue : .orange
+                    )
                 }
-                ProgressView(value: data.stepProgress)
-                    .tint(.orange)
-                    .scaleEffect(y: 1.4)
-                if data.distanceMeters > 0 {
-                    HStack {
-                        Label(String(format: "%.1f km", data.distanceMeters / 1000), systemImage: "mappin.and.ellipse")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        if data.flightsClimbed > 0 {
-                            Label("\(data.flightsClimbed) flights", systemImage: "stairs")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
+                if let rr = data.freshRespiratoryRate {
+                    VitalMetricTile(
+                        icon: "wind",
+                        label: "Breathing",
+                        value: String(format: "%.0f", rr.value),
+                        age: rr.ageString,
+                        note: "breaths/min",
+                        color: .teal
+                    )
+                }
+                Spacer()
+            }
+        }
+    }
+
+    // MARK: - Sleep Card
+
+    private func sleepCard(_ sleep: SleepSummary) -> some View {
+        DashCard(title: "Sleep", icon: "moon.fill", iconColor: .indigo) {
+            VStack(spacing: 10) {
+                HStack {
+                    VStack(alignment: .leading, spacing: 2) {
+                        HStack(alignment: .firstTextBaseline, spacing: 4) {
+                            Text(String(format: "%.1f", sleep.totalAsleepHours))
+                                .font(.system(size: 28, weight: .bold, design: .rounded))
+                            Text("hrs").font(.subheadline).foregroundStyle(.secondary)
                         }
-                        Spacer()
+                        Text(sleep.quality)
+                            .font(.caption)
+                            .foregroundStyle(sleep.qualityColor)
+                    }
+                    Spacer()
+                    if let bed = sleep.bedtime, let wake = sleep.wakeTime {
+                        VStack(alignment: .trailing, spacing: 2) {
+                            Text(bed, format: .dateTime.hour().minute())
+                                .font(.caption2).foregroundStyle(.secondary)
+                            Image(systemName: "arrow.down")
+                                .font(.caption2).foregroundStyle(.tertiary)
+                            Text(wake, format: .dateTime.hour().minute())
+                                .font(.caption2).foregroundStyle(.secondary)
+                        }
                     }
                 }
+                Divider()
+                SleepStagesView(summary: sleep)
             }
         }
     }
@@ -247,51 +250,17 @@ struct DashboardView: View {
     // MARK: - Workouts Card
 
     private var workoutsCard: some View {
-        MetricCard(title: "Workouts", icon: "figure.run", iconColor: .green) {
+        DashCard(title: "Workouts", icon: "figure.run", iconColor: .green) {
             VStack(spacing: 10) {
-                if let headline = insights.workoutHeadline {
-                    Text(headline)
-                        .font(.system(size: 15, weight: .semibold))
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                }
                 ForEach(data.workouts) { workout in
                     WorkoutRow(workout: workout)
-                    if workout.id != data.workouts.last?.id {
-                        Divider()
-                    }
+                    if workout.id != data.workouts.last?.id { Divider() }
                 }
             }
         }
     }
 
-    // MARK: - Vitals Card
-
-    private var vitalsCard: some View {
-        MetricCard(title: "Vitals", icon: "waveform.path.ecg", iconColor: .pink) {
-            HStack(spacing: 12) {
-                if data.bloodOxygen > 0 {
-                    VitalTile(
-                        icon: "lungs.fill",
-                        label: "Blood Oxygen",
-                        value: String(format: "%.0f%%", data.bloodOxygen),
-                        note: data.bloodOxygen >= 95 ? "Normal" : "Below normal",
-                        color: data.bloodOxygen >= 95 ? .blue : .orange
-                    )
-                }
-                if data.respiratoryRate > 0 {
-                    VitalTile(
-                        icon: "wind",
-                        label: "Breathing Rate",
-                        value: String(format: "%.0f", data.respiratoryRate),
-                        note: "breaths / min",
-                        color: .teal
-                    )
-                }
-            }
-        }
-    }
-
-    // MARK: - Loading
+    // MARK: - Load / Refresh
 
     private func loadData() async {
         data.isLoading = true
@@ -305,14 +274,13 @@ struct DashboardView: View {
     }
 }
 
-// MARK: - Insight Card
+// MARK: - DashCard container
 
-private struct InsightCard<Detail: View>: View {
-    let label: String
+private struct DashCard<Content: View>: View {
+    let title: String
     let icon: String
     let iconColor: Color
-    let insight: HealthInsight
-    @ViewBuilder let detail: () -> Detail
+    @ViewBuilder let content: () -> Content
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -320,33 +288,13 @@ private struct InsightCard<Detail: View>: View {
                 Image(systemName: icon)
                     .font(.system(size: 12, weight: .semibold))
                     .foregroundStyle(iconColor)
-                Text(label.uppercased())
+                Text(title.uppercased())
                     .font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(.secondary)
                     .tracking(0.5)
                 Spacer()
-                InsightBadge(status: insight.status)
             }
-
-            VStack(alignment: .leading, spacing: 4) {
-                Text(insight.headline)
-                    .font(.system(size: 18, weight: .semibold))
-                if insight.status != .noData {
-                    Text(insight.detail)
-                        .font(.system(size: 14))
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-            }
-
-            if insight.status != .noData {
-                Divider()
-                detail()
-            } else {
-                Text(insight.detail)
-                    .font(.system(size: 14))
-                    .foregroundStyle(.secondary)
-            }
+            content()
         }
         .padding(16)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -354,55 +302,82 @@ private struct InsightCard<Detail: View>: View {
     }
 }
 
-// MARK: - Insight Badge
+// MARK: - Heart metric tile (with measurement age)
 
-private struct InsightBadge: View {
-    let status: InsightStatus
-
-    private var label: String {
-        switch status {
-        case .great: return "Great"
-        case .good: return "Good"
-        case .fair: return "Fair"
-        case .low: return "Low"
-        case .noData: return "—"
-        }
-    }
-
-    var body: some View {
-        if status != .noData {
-            Text(label)
-                .font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(status.color)
-                .padding(.horizontal, 8)
-                .padding(.vertical, 3)
-                .background(status.color.opacity(0.12), in: Capsule())
-        }
-    }
-}
-
-// MARK: - Recovery Metric
-
-private struct RecoveryMetric: View {
+private struct HeartMetricTile: View {
     let label: String
     let value: String
     let unit: String
-    let note: String
+    let age: String
+    let color: Color
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
             Text(label)
-                .font(.system(size: 11, weight: .medium))
+                .font(.system(size: 10, weight: .medium))
                 .foregroundStyle(.secondary)
             HStack(alignment: .firstTextBaseline, spacing: 3) {
                 Text(value)
-                    .font(.system(size: 22, weight: .bold, design: .rounded))
+                    .font(.system(size: 20, weight: .bold, design: .rounded))
+                    .foregroundStyle(color)
                 Text(unit)
-                    .font(.caption)
+                    .font(.system(size: 10))
                     .foregroundStyle(.secondary)
             }
-            Text(note)
+            Text(age)
+                .font(.system(size: 10))
+                .foregroundStyle(.tertiary)
+        }
+    }
+}
+
+// MARK: - Vital metric tile (with measurement age)
+
+private struct VitalMetricTile: View {
+    let icon: String
+    let label: String
+    let value: String
+    let age: String
+    let note: String
+    let color: Color
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(systemName: icon)
+                .font(.system(size: 20))
+                .foregroundStyle(color)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(label)
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(.secondary)
+                Text(value)
+                    .font(.system(size: 18, weight: .bold, design: .rounded))
+                HStack(spacing: 4) {
+                    Text(note).font(.system(size: 11)).foregroundStyle(.secondary)
+                    Text("·").foregroundStyle(.tertiary)
+                    Text(age).font(.system(size: 11)).foregroundStyle(.tertiary)
+                }
+            }
+        }
+    }
+}
+
+// MARK: - StatPill
+
+private struct StatPill: View {
+    let label: String
+    let value: String
+    let icon: String
+
+    var body: some View {
+        VStack(spacing: 2) {
+            Image(systemName: icon)
                 .font(.system(size: 12))
+                .foregroundStyle(.secondary)
+            Text(value)
+                .font(.system(size: 13, weight: .semibold, design: .rounded))
+            Text(label)
+                .font(.system(size: 10))
                 .foregroundStyle(.secondary)
         }
     }
@@ -419,56 +394,22 @@ private struct WorkoutRow: View {
                 .font(.system(size: 18))
                 .foregroundStyle(.green)
                 .frame(width: 28)
-
             VStack(alignment: .leading, spacing: 2) {
                 Text(workout.displayName)
                     .font(.system(size: 15, weight: .semibold))
                 Text(workout.startDate, style: .time)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .font(.caption).foregroundStyle(.secondary)
             }
-
             Spacer()
-
             VStack(alignment: .trailing, spacing: 2) {
                 Text("\(Int(workout.durationMinutes)) min")
                     .font(.system(size: 13, weight: .semibold, design: .rounded))
                 if workout.activeEnergyKcal > 0 {
                     Text("\(Int(workout.activeEnergyKcal)) Cal")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .font(.caption).foregroundStyle(.secondary)
                 }
             }
         }
-    }
-}
-
-// MARK: - Vitals Tile
-
-private struct VitalTile: View {
-    let icon: String
-    let label: String
-    let value: String
-    let note: String
-    let color: Color
-
-    var body: some View {
-        HStack(spacing: 10) {
-            Image(systemName: icon)
-                .font(.system(size: 18))
-                .foregroundStyle(color)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(label)
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(.secondary)
-                Text(value)
-                    .font(.system(size: 17, weight: .bold, design: .rounded))
-                Text(note)
-                    .font(.system(size: 12))
-                    .foregroundStyle(.secondary)
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 

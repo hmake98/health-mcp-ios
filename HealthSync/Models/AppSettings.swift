@@ -16,6 +16,12 @@ final class AppSettings {
         static let lastVitalsSyncDate = "lastVitalsSyncDate"
         static let lastSleepSyncDate = "lastSleepSyncDate"
         static let lastWorkoutsSyncDate = "lastWorkoutsSyncDate"
+        static let hasRequestedHKAuthorization = "hasRequestedHKAuthorization"
+    }
+
+    var hasRequestedHKAuthorization: Bool {
+        get { defaults.bool(forKey: Key.hasRequestedHKAuthorization) }
+        set { defaults.set(newValue, forKey: Key.hasRequestedHKAuthorization) }
     }
 
     var syncIntervalMinutes: Int {

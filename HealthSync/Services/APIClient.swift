@@ -36,6 +36,16 @@ final class APIClient {
 
     // MARK: - Auth Endpoints (no API key required)
 
+    func register(name: String, email: String, password: String) async throws -> AuthResponse {
+        let body = try encoder.encode(RegisterRequest(name: name, email: email, password: password))
+        var request = URLRequest(url: try url("/auth/register"))
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = body
+        let (data, _) = try await perform(request, requiresAuth: false)
+        return try decoder.decode(AuthResponse.self, from: data)
+    }
+
     func login(email: String, password: String) async throws -> AuthResponse {
         let body = try encoder.encode(LoginRequest(email: email, password: password))
         var request = URLRequest(url: try url("/auth/login"))
@@ -101,6 +111,15 @@ final class APIClient {
             total += batch.count
         }
         return total
+    }
+
+    func clearAllHealthData() async throws {
+        let key = storedAPIKey
+        guard !key.isEmpty else { throw APIError.unauthenticated }
+        var request = URLRequest(url: try url("/api/health/all"))
+        request.httpMethod = "DELETE"
+        request.setValue(key, forHTTPHeaderField: "x-api-key")
+        _ = try await perform(request)
     }
 
     // MARK: - Private Helpers

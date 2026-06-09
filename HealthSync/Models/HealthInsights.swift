@@ -206,7 +206,7 @@ struct HealthInsights {
 
     var recovery: HealthInsight {
         let hrv = data.heartRateVariability
-        let rhr = data.restingHeartRate
+        let rhr = data.restingHeartRate?.value ?? 0
 
         guard hrv > 0 || rhr > 0 else {
             return HealthInsight(

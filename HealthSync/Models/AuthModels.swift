@@ -12,6 +12,12 @@ struct LoginRequest: Encodable {
     let password: String
 }
 
+struct RegisterRequest: Encodable {
+    let name: String
+    let email: String
+    let password: String
+}
+
 struct APIErrorResponse: Decodable {
     let error: String?
     let message: String?

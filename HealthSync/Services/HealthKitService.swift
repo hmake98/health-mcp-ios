@@ -31,6 +31,30 @@ final class HealthKitService {
         try await store.requestAuthorization(toShare: [], read: readTypes)
     }
 
+    // MARK: - Background Delivery
+
+    // Registers HKObserverQuery for key types and enables background delivery.
+    // iOS wakes the app when any observed type has new data; onNewData fires on a background thread.
+    // The completion handler MUST be called promptly (within ~15 s) or iOS kills the wake.
+    func enableBackgroundDelivery(onNewData: @escaping () -> Void) {
+        let observedTypes: [HKSampleType] = [
+            HKQuantityType(.heartRate),
+            HKQuantityType(.stepCount),
+            HKQuantityType(.activeEnergyBurned),
+            HKCategoryType(.sleepAnalysis),
+            HKWorkoutType.workoutType(),
+        ]
+        for type in observedTypes {
+            let query = HKObserverQuery(sampleType: type, predicate: nil) { _, completionHandler, error in
+                defer { completionHandler() } // release HealthKit's background time immediately
+                guard error == nil else { return }
+                onNewData()
+            }
+            store.execute(query)
+            store.enableBackgroundDelivery(for: type, frequency: .immediate) { _, _ in }
+        }
+    }
+
     // MARK: - Dashboard Fetch
 
     func fetchDashboardData() async -> DashboardData {
@@ -39,6 +63,7 @@ final class HealthKitService {
 
         let today = Calendar.current.startOfDay(for: Date())
         let now = Date()
+        let bpm = HKUnit.count().unitDivided(by: .minute())
 
         async let steps = fetchTodaySum(.stepCount, unit: .count(), start: today, end: now)
         async let distance = fetchTodaySum(.distanceWalkingRunning, unit: .meter(), start: today, end: now)
@@ -46,12 +71,11 @@ final class HealthKitService {
         async let exerciseMinutes = fetchTodaySum(.appleExerciseTime, unit: .minute(), start: today, end: now)
         async let standHours = fetchTodaySum(.appleStandTime, unit: .hour(), start: today, end: now)
         async let flights = fetchTodaySum(.flightsClimbed, unit: .count(), start: today, end: now)
-        async let currentHR = fetchLatestSample(.heartRate, unit: HKUnit.count().unitDivided(by: .minute()))
-        async let restingHR = fetchLatestSample(.restingHeartRate, unit: HKUnit.count().unitDivided(by: .minute()))
-        async let hrv = fetchLatestSample(.heartRateVariabilitySDNN, unit: .secondUnit(with: .milli))
-        async let spo2 = fetchLatestSample(.oxygenSaturation, unit: .percent())
-        async let respRate = fetchLatestSample(.respiratoryRate, unit: HKUnit.count().unitDivided(by: .minute()))
-        async let walkingHR = fetchLatestSample(.walkingHeartRateAverage, unit: HKUnit.count().unitDivided(by: .minute()))
+        async let currentHR = fetchLatestSampleWithDate(.heartRate, unit: bpm)
+        async let restingHR = fetchLatestSampleWithDate(.restingHeartRate, unit: bpm)
+        async let hrv = fetchLatestSampleWithDate(.heartRateVariabilitySDNN, unit: .secondUnit(with: .milli))
+        async let spo2 = fetchLatestSampleWithDate(.oxygenSaturation, unit: .percent())
+        async let respRate = fetchLatestSampleWithDate(.respiratoryRate, unit: bpm)
         async let hrSamples = fetchHeartRateSamples(hours: 8)
         async let sleep = fetchLastNightSleep()
         async let workouts = fetchTodayWorkouts()
@@ -62,12 +86,14 @@ final class HealthKitService {
         data.exerciseMinutes = Int(await exerciseMinutes)
         data.standHours = Int(await standHours)
         data.flightsClimbed = Int(await flights)
-        data.currentHeartRate = await currentHR
-        data.restingHeartRate = await restingHR
-        data.heartRateVariability = await hrv
-        data.bloodOxygen = await spo2 * 100
-        data.respiratoryRate = await respRate
-        data.walkingHeartRateAvg = await walkingHR
+
+        if let hr = await currentHR   { data.heartRate        = TimedValue(value: hr.value, measuredAt: hr.measuredAt) }
+        if let rh = await restingHR   { data.restingHeartRate = TimedValue(value: rh.value, measuredAt: rh.measuredAt) }
+        if let hv = await hrv         { data.hrv              = TimedValue(value: hv.value, measuredAt: hv.measuredAt) }
+        // oxygenSaturation returns 0–1 fraction; convert to 0–100 %
+        if let o2 = await spo2        { data.bloodOxygen      = TimedValue(value: o2.value * 100, measuredAt: o2.measuredAt) }
+        if let rr = await respRate    { data.respiratoryRate  = TimedValue(value: rr.value, measuredAt: rr.measuredAt) }
+
         data.heartRateSamples = await hrSamples
         data.sleepSummary = await sleep
         data.workouts = await workouts
@@ -107,6 +133,26 @@ final class HealthKitService {
         }
     }
 
+    // Returns both value and the measurement timestamp so callers can build a TimedValue.
+    func fetchLatestSampleWithDate(_ id: HKQuantityTypeIdentifier, unit: HKUnit) async -> (value: Double, measuredAt: Date)? {
+        await withCheckedContinuation { continuation in
+            let sort = NSSortDescriptor(key: HKSampleSortIdentifierStartDate, ascending: false)
+            let query = HKSampleQuery(
+                sampleType: HKQuantityType(id),
+                predicate: nil,
+                limit: 1,
+                sortDescriptors: [sort]
+            ) { _, samples, _ in
+                guard let sample = samples?.first as? HKQuantitySample else {
+                    continuation.resume(returning: nil)
+                    return
+                }
+                continuation.resume(returning: (sample.quantity.doubleValue(for: unit), sample.startDate))
+            }
+            store.execute(query)
+        }
+    }
+
     // MARK: - Heart Rate Samples
 
     private func fetchHeartRateSamples(hours: Int) async -> [HeartRateSample] {
@@ -135,7 +181,8 @@ final class HealthKitService {
     private func fetchLastNightSleep() async -> SleepSummary? {
         await withCheckedContinuation { continuation in
             let now = Date()
-            let yesterday = Calendar.current.date(byAdding: .hour, value: -20, to: now) ?? now
+            // 26 h window captures late-night sleepers (e.g. 2 AM start) and early risers.
+            let yesterday = Calendar.current.date(byAdding: .hour, value: -26, to: now) ?? now
             let predicate = HKQuery.predicateForSamples(withStart: yesterday, end: now)
             let sort = NSSortDescriptor(key: HKSampleSortIdentifierStartDate, ascending: true)
             let query = HKSampleQuery(
@@ -212,24 +259,26 @@ final class HealthKitService {
         var records: [VitalRecord] = []
         let iso = ISO8601DateFormatter()
 
-        let types: [(HKQuantityTypeIdentifier, String, HKUnit)] = [
-            (.heartRate, VitalType.heartRate, HKUnit.count().unitDivided(by: .minute())),
-            (.restingHeartRate, VitalType.restingHeartRate, HKUnit.count().unitDivided(by: .minute())),
-            (.heartRateVariabilitySDNN, VitalType.hrv, .secondUnit(with: .milli)),
-            (.oxygenSaturation, VitalType.bloodOxygen, .percent()),
-            (.bloodPressureSystolic, VitalType.bloodPressureSystolic, .millimeterOfMercury()),
-            (.bloodPressureDiastolic, VitalType.bloodPressureDiastolic, .millimeterOfMercury()),
-            (.respiratoryRate, VitalType.respiratoryRate, HKUnit.count().unitDivided(by: .minute())),
-            (.walkingHeartRateAverage, VitalType.walkingHeartRateAverage, HKUnit.count().unitDivided(by: .minute())),
+        let bpm = HKUnit.count().unitDivided(by: .minute())
+        let types: [(HKQuantityTypeIdentifier, String, HKUnit, Double)] = [
+            (.heartRate,               VitalType.heartRate,               bpm,                    1),
+            (.restingHeartRate,        VitalType.restingHeartRate,        bpm,                    1),
+            (.heartRateVariabilitySDNN,VitalType.hrv,                     .secondUnit(with: .milli), 1),
+            // oxygenSaturation returns 0–1 fraction; multiply by 100 to store as percentage (97.0 not 0.97)
+            (.oxygenSaturation,        VitalType.bloodOxygen,             .percent(),             100),
+            (.bloodPressureSystolic,   VitalType.bloodPressureSystolic,   .millimeterOfMercury(), 1),
+            (.bloodPressureDiastolic,  VitalType.bloodPressureDiastolic,  .millimeterOfMercury(), 1),
+            (.respiratoryRate,         VitalType.respiratoryRate,         bpm,                    1),
+            (.walkingHeartRateAverage, VitalType.walkingHeartRateAverage, bpm,                    1),
         ]
 
-        for (typeID, typeName, unit) in types {
+        for (typeID, typeName, unit, multiplier) in types {
             let samples = await fetchQuantitySamples(typeID, since: startDate)
             let vitalRecords = samples.map { sample in
                 VitalRecord(
                     type: typeName,
-                    value: sample.quantity.doubleValue(for: unit),
-                    unit: unit.unitString,
+                    value: sample.quantity.doubleValue(for: unit) * multiplier,
+                    unit: typeName == VitalType.bloodOxygen ? "%" : unit.unitString,
                     startDate: iso.string(from: sample.startDate),
                     endDate: iso.string(from: sample.endDate),
                     source: sample.sourceRevision.source.name

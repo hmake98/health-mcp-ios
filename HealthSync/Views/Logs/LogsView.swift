@@ -44,13 +44,14 @@ struct LogsView: View {
                 } else {
                     Section {
                         ForEach(pagedLogs) { log in
-                            LogRow(log: log, isExpanded: expandedId == log.id)
-                                .contentShape(Rectangle())
-                                .onTapGesture {
-                                    withAnimation(.easeInOut(duration: 0.2)) {
-                                        expandedId = expandedId == log.id ? nil : log.id
-                                    }
+                            Button {
+                                withAnimation(.easeInOut(duration: 0.2)) {
+                                    expandedId = expandedId == log.id ? nil : log.id
                                 }
+                            } label: {
+                                LogRow(log: log, isExpanded: expandedId == log.id)
+                            }
+                            .buttonStyle(.plain)
                         }
                     } footer: {
                         if filteredLogs.count > pagedLogs.count {
@@ -190,20 +191,11 @@ private struct LogRow: View {
     let log: SyncLog
     let isExpanded: Bool
 
-    private var statusColor: Color {
-        switch log.status {
-        case .success: return .green
-        case .failed: return .red
-        case .partial: return .orange
-        case .running: return .blue
-        }
-    }
-
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 10) {
                 Image(systemName: log.statusIcon)
-                    .foregroundStyle(statusColor)
+                    .foregroundStyle(log.statusColor)
                     .font(.system(size: 16))
                     .frame(width: 24)
 
@@ -277,7 +269,7 @@ private struct LogRow: View {
 private struct FilterChip: View {
     let label: String
     var icon: String? = nil
-    var color: Color = .primary
+    var color: Color = .blue
     let isSelected: Bool
     let action: () -> Void
 
@@ -293,10 +285,12 @@ private struct FilterChip: View {
                     .font(.system(size: 13, weight: .medium))
                     .foregroundStyle(isSelected ? .white : .primary)
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 7)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 8)
+            .frame(minWidth: 68)
             .background(isSelected ? color : Color.secondary.opacity(0.1), in: Capsule())
         }
+        .buttonStyle(.plain)
     }
 }
 

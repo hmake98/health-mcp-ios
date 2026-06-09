@@ -1,4 +1,5 @@
 import Foundation
+import SwiftUI
 
 enum SyncStatus: String, Codable, CaseIterable {
     case success = "success"
@@ -45,21 +46,24 @@ struct SyncLog: Identifiable, Codable {
         }
     }
 
-    var statusColor: String {
+    var statusColor: Color {
         switch status {
-        case .success: return "green"
-        case .failed: return "red"
-        case .partial: return "orange"
-        case .running: return "blue"
+        case .success: return .green
+        case .failed: return .red
+        case .partial: return .orange
+        case .running: return .blue
         }
     }
 
-    var formattedDate: String {
-        let formatter = DateFormatter()
-        formatter.dateStyle = .medium
-        formatter.timeStyle = .short
-        return formatter.string(from: date)
-    }
+    // Static formatter — DateFormatter is expensive to create; reuse on main thread.
+    private static let dateFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateStyle = .medium
+        f.timeStyle = .short
+        return f
+    }()
+
+    var formattedDate: String { Self.dateFormatter.string(from: date) }
 
     var formattedDuration: String {
         if durationSeconds < 1 { return "<1s" }
@@ -89,21 +93,20 @@ final class SyncLogStore {
 
     private let key = "syncLogs"
     private let maxLogs = 500
-    private let defaults = UserDefaults.standard
+    // In-memory cache eliminates repeated JSON decoding on every read.
+    private var cache: [SyncLog]?
+    // Serial queue — writes are dispatched off the main thread.
+    private let saveQueue = DispatchQueue(label: "com.hmake98.HealthSync.logStore", qos: .utility)
 
     func load() -> [SyncLog] {
-        guard let data = defaults.data(forKey: key),
+        if let cache { return cache }
+        guard let data = UserDefaults.standard.data(forKey: key),
               let logs = try? JSONDecoder().decode([SyncLog].self, from: data) else {
+            cache = []
             return []
         }
+        cache = logs
         return logs
-    }
-
-    func save(_ logs: [SyncLog]) {
-        let trimmed = Array(logs.suffix(maxLogs))
-        if let data = try? JSONEncoder().encode(trimmed) {
-            defaults.set(data, forKey: key)
-        }
     }
 
     func append(_ log: SyncLog) {
@@ -113,18 +116,30 @@ final class SyncLogStore {
         } else {
             logs.append(log)
         }
-        save(logs)
+        persist(logs)
     }
 
     func update(_ log: SyncLog) {
         var logs = load()
-        if let idx = logs.firstIndex(where: { $0.id == log.id }) {
-            logs[idx] = log
-        }
-        save(logs)
+        guard let idx = logs.firstIndex(where: { $0.id == log.id }) else { return }
+        logs[idx] = log
+        persist(logs)
     }
 
     func clear() {
-        defaults.removeObject(forKey: key)
+        cache = []
+        saveQueue.async {
+            UserDefaults.standard.removeObject(forKey: self.key)
+        }
+    }
+
+    private func persist(_ logs: [SyncLog]) {
+        let trimmed = Array(logs.suffix(maxLogs))
+        cache = trimmed
+        // Encode on main thread (fast), write to defaults on background queue.
+        guard let data = try? JSONEncoder().encode(trimmed) else { return }
+        saveQueue.async {
+            UserDefaults.standard.set(data, forKey: self.key)
+        }
     }
 }
