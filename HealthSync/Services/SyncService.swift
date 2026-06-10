@@ -32,14 +32,16 @@ final class SyncService {
         logStore.append(log)
         let startTime = Date()
 
-        // Always cover at least the last 2 days so HealthKit retroactive updates are captured.
-        let recentWindow = Calendar.current.date(byAdding: .day, value: -2, to: Date()) ?? Date()
+        // 4-hour overlap catches Apple Watch retroactive writes without re-sending days of data.
+        // Records carry a sourceId (HealthKit UUID) so the server can upsert safely if the
+        // same sample arrives in two consecutive syncs within the overlap window.
+        let overlapWindow = Date(timeIntervalSinceNow: -4 * 3600)
 
         var totalSynced = 0
         var errors: [String] = []
 
         // Vitals
-        let vitalsStart = min(settings.lastVitalsSyncDate ?? settings.defaultSyncStartDate(), recentWindow)
+        let vitalsStart = min(settings.lastVitalsSyncDate ?? settings.defaultSyncStartDate(), overlapWindow)
         let vitals = await healthKit.fetchVitalRecords(since: vitalsStart)
         if !vitals.isEmpty {
             do {
@@ -56,7 +58,7 @@ final class SyncService {
         }
 
         // Sleep
-        let sleepStart = min(settings.lastSleepSyncDate ?? settings.defaultSyncStartDate(), recentWindow)
+        let sleepStart = min(settings.lastSleepSyncDate ?? settings.defaultSyncStartDate(), overlapWindow)
         let sleep = await healthKit.fetchSleepRecords(since: sleepStart)
         if !sleep.isEmpty {
             do {
@@ -73,7 +75,7 @@ final class SyncService {
         }
 
         // Workouts
-        let workoutsStart = min(settings.lastWorkoutsSyncDate ?? settings.defaultSyncStartDate(), recentWindow)
+        let workoutsStart = min(settings.lastWorkoutsSyncDate ?? settings.defaultSyncStartDate(), overlapWindow)
         let workouts = await healthKit.fetchWorkoutRecords(since: workoutsStart)
         if !workouts.isEmpty {
             do {
@@ -89,11 +91,14 @@ final class SyncService {
             log.details.append(SyncDetail(type: .workouts, recordsSynced: 0))
         }
 
-        // Activity — always last 14 days, upserted by day on server
-        let activityRecords = await healthKit.fetchActivityRecords(forLast: 14)
+        // Activity — daily aggregates keyed by date; send today + yesterday so in-progress
+        // days stay current without re-blasting the full historical window every sync.
+        let activityDays = settings.lastActivitySyncDate == nil ? 30 : 2
+        let activityRecords = await healthKit.fetchActivityRecords(forLast: activityDays)
         if !activityRecords.isEmpty {
             do {
                 let count = try await api.syncActivity(records: activityRecords)
+                settings.updateActivitySyncDate(Date())
                 totalSynced += count
                 log.details.append(SyncDetail(type: .activity, recordsSynced: count))
             } catch {
@@ -153,13 +158,20 @@ final class SyncService {
 
     nonisolated func handleBackgroundSync(task: BGAppRefreshTask) {
         let syncTask = Task { @MainActor in
+            SyncService.shared.setupBackgroundObservers()
             await SyncService.shared.syncNow()
             SyncService.shared.scheduleBackgroundSync()
-            task.setTaskCompleted(success: true)
+            // Guard against calling setTaskCompleted after the expiration handler already fired.
+            if !Task.isCancelled {
+                task.setTaskCompleted(success: true)
+            }
         }
-        // Cancel the in-flight task when iOS reclaims background time.
         task.expirationHandler = {
             syncTask.cancel()
+            // Keep the chain alive even when this run expired.
+            Task { @MainActor in
+                SyncService.shared.scheduleBackgroundSync()
+            }
             task.setTaskCompleted(success: false)
         }
     }

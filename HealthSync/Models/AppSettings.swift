@@ -16,6 +16,7 @@ final class AppSettings {
         static let lastVitalsSyncDate = "lastVitalsSyncDate"
         static let lastSleepSyncDate = "lastSleepSyncDate"
         static let lastWorkoutsSyncDate = "lastWorkoutsSyncDate"
+        static let lastActivitySyncDate = "lastActivitySyncDate"
         static let hasRequestedHKAuthorization = "hasRequestedHKAuthorization"
     }
 
@@ -52,12 +53,19 @@ final class AppSettings {
         set { defaults.set(newValue, forKey: Key.lastWorkoutsSyncDate) }
     }
 
+    var lastActivitySyncDate: Date? {
+        get { defaults.object(forKey: Key.lastActivitySyncDate) as? Date }
+        set { defaults.set(newValue, forKey: Key.lastActivitySyncDate) }
+    }
+
     func updateVitalsSyncDate(_ date: Date) { lastVitalsSyncDate = date }
     func updateSleepSyncDate(_ date: Date) { lastSleepSyncDate = date }
     func updateWorkoutsSyncDate(_ date: Date) { lastWorkoutsSyncDate = date }
+    func updateActivitySyncDate(_ date: Date) { lastActivitySyncDate = date }
 
     func clearSyncDates() {
-        [Key.lastSyncDate, Key.lastVitalsSyncDate, Key.lastSleepSyncDate, Key.lastWorkoutsSyncDate].forEach {
+        [Key.lastSyncDate, Key.lastVitalsSyncDate, Key.lastSleepSyncDate,
+         Key.lastWorkoutsSyncDate, Key.lastActivitySyncDate].forEach {
             defaults.removeObject(forKey: $0)
         }
     }

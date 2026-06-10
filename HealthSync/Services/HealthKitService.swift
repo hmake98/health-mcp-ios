@@ -276,6 +276,7 @@ final class HealthKitService {
             let samples = await fetchQuantitySamples(typeID, since: startDate)
             let vitalRecords = samples.map { sample in
                 VitalRecord(
+                    sourceId: sample.uuid.uuidString,
                     type: typeName,
                     value: sample.quantity.doubleValue(for: unit) * multiplier,
                     unit: typeName == VitalType.bloodOxygen ? "%" : unit.unitString,
@@ -303,6 +304,7 @@ final class HealthKitService {
                 let records = (samples as? [HKCategorySample] ?? []).map { sample in
                     let duration = Int(sample.endDate.timeIntervalSince(sample.startDate))
                     return SleepRecord(
+                        sourceId: sample.uuid.uuidString,
                         stage: Self.sleepStageString(from: sample.value),
                         startDate: iso.string(from: sample.startDate),
                         endDate: iso.string(from: sample.endDate),
@@ -335,6 +337,7 @@ final class HealthKitService {
                     let avgHR = w.statistics(for: HKQuantityType(.heartRate))?
                         .averageQuantity()?.doubleValue(for: HKUnit.count().unitDivided(by: .minute()))
                     return WorkoutRecord(
+                        sourceId: w.uuid.uuidString,
                         workoutType: w.workoutActivityType.name,
                         startDate: iso.string(from: w.startDate),
                         endDate: iso.string(from: w.endDate),

@@ -9,6 +9,7 @@ struct WorkoutsRequest: Encodable { let records: [WorkoutRecord] }
 struct ActivityRequest: Encodable { let records: [ActivityRecord] }
 
 struct VitalRecord: Encodable {
+    let sourceId: String
     let type: String
     let value: Double
     let unit: String
@@ -18,6 +19,7 @@ struct VitalRecord: Encodable {
 }
 
 struct SleepRecord: Encodable {
+    let sourceId: String
     let stage: String
     let startDate: String
     let endDate: String
@@ -26,6 +28,7 @@ struct SleepRecord: Encodable {
 }
 
 struct WorkoutRecord: Encodable {
+    let sourceId: String
     let workoutType: String
     let startDate: String
     let endDate: String
