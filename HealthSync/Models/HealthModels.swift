@@ -75,6 +75,29 @@ struct TimedValue {
     }
 }
 
+// MARK: - Sleep Consistency
+
+struct SleepConsistency {
+    let nightsAnalyzed: Int
+    let bedtimeVarianceMinutes: Double  // standard deviation of bedtime in minutes
+
+    var label: String {
+        guard nightsAnalyzed >= 3 else { return "Not enough data" }
+        if bedtimeVarianceMinutes < 20 { return "Very Consistent" }
+        if bedtimeVarianceMinutes < 40 { return "Consistent" }
+        if bedtimeVarianceMinutes < 70 { return "Variable" }
+        return "Irregular"
+    }
+
+    var color: Color {
+        guard nightsAnalyzed >= 3 else { return .secondary }
+        if bedtimeVarianceMinutes < 20 { return .green }
+        if bedtimeVarianceMinutes < 40 { return Color(red: 0.2, green: 0.6, blue: 1.0) }
+        if bedtimeVarianceMinutes < 70 { return .orange }
+        return .red
+    }
+}
+
 // MARK: - Dashboard Data
 
 struct DashboardData {
@@ -93,19 +116,22 @@ struct DashboardData {
     var flightsClimbed: Int = 0
 
     // Heart metrics with measurement timestamps
-    var heartRate: TimedValue? = nil         // stale after 4 h
-    var restingHeartRate: TimedValue? = nil  // stale after 24 h
-    var hrv: TimedValue? = nil               // stale after 24 h
+    var heartRate: TimedValue? = nil            // stale after 4 h
+    var restingHeartRate: TimedValue? = nil     // stale after 24 h
+    var hrv: TimedValue? = nil                  // stale after 24 h
+    var walkingHeartRateAvg: TimedValue? = nil  // stale after 24 h (daily Apple Watch metric)
 
     // Vitals with measurement timestamps
     var bloodOxygen: TimedValue? = nil       // stale after 4 h; stored as 0–100 %
     var respiratoryRate: TimedValue? = nil   // stale after 4 h
+    var vo2Max: TimedValue? = nil            // stale after 14 days (weekly Apple Watch estimate)
 
     // Heart rate chart — last 8 hours of individual readings
     var heartRateSamples: [HeartRateSample] = []
 
-    // Sleep — last night
+    // Sleep — last night + consistency across last 7 nights
     var sleepSummary: SleepSummary? = nil
+    var sleepConsistency: SleepConsistency? = nil
 
     // Workouts today
     var workouts: [WorkoutSummary] = []
@@ -121,16 +147,13 @@ struct DashboardData {
 
     // MARK: - Fresh metric accessors
 
-    /// Returns heartRate only if measured within the last 4 hours.
-    var freshHeartRate: TimedValue?       { heartRate.flatMap     { $0.isStale() ? nil : $0 } }
-    /// Returns bloodOxygen only if measured within the last 4 hours.
-    var freshBloodOxygen: TimedValue?     { bloodOxygen.flatMap   { $0.isStale() ? nil : $0 } }
-    /// Returns respiratoryRate only if measured within the last 4 hours.
+    var freshHeartRate: TimedValue?       { heartRate.flatMap      { $0.isStale() ? nil : $0 } }
+    var freshBloodOxygen: TimedValue?     { bloodOxygen.flatMap    { $0.isStale() ? nil : $0 } }
     var freshRespiratoryRate: TimedValue? { respiratoryRate.flatMap { $0.isStale() ? nil : $0 } }
-    /// Returns restingHeartRate only if measured within the last 24 hours.
-    var freshRestingHR: TimedValue?       { restingHeartRate.flatMap { $0.isStale(within: TimedValue.longStaleness) ? nil : $0 } }
-    /// Returns HRV only if measured within the last 24 hours.
-    var freshHRV: TimedValue?             { hrv.flatMap { $0.isStale(within: TimedValue.longStaleness) ? nil : $0 } }
+    var freshRestingHR: TimedValue?       { restingHeartRate.flatMap   { $0.isStale(within: TimedValue.longStaleness) ? nil : $0 } }
+    var freshHRV: TimedValue?             { hrv.flatMap             { $0.isStale(within: TimedValue.longStaleness) ? nil : $0 } }
+    var freshWalkingHRAvg: TimedValue?    { walkingHeartRateAvg.flatMap { $0.isStale(within: TimedValue.longStaleness) ? nil : $0 } }
+    var freshVo2Max: TimedValue?          { vo2Max.flatMap          { $0.isStale(within: 14 * 24 * 3600) ? nil : $0 } }
 
     // MARK: - Visibility helpers
 
@@ -140,7 +163,7 @@ struct DashboardData {
 
     // MARK: - Backward-compat properties (used by HealthInsights.swift)
 
-    var currentHeartRate: Double   { heartRate?.value ?? 0 }
+    var currentHeartRate: Double     { heartRate?.value ?? 0 }
     var heartRateVariability: Double { hrv?.value ?? 0 }
     var heartRateMin: Double { heartRateSamples.map(\.value).min() ?? 0 }
     var heartRateMax: Double { heartRateSamples.map(\.value).max() ?? 0 }
@@ -272,6 +295,7 @@ enum VitalType {
     static let bloodPressureDiastolic  = "blood_pressure_diastolic"
     static let respiratoryRate         = "respiratory_rate"
     static let walkingHeartRateAverage = "walking_heart_rate_average"
+    static let vo2Max                  = "vo2_max"
 }
 
 enum SleepStageType {

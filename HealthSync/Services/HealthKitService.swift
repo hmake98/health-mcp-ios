@@ -1,5 +1,8 @@
 import Foundation
 import HealthKit
+import os
+
+private let hkLogger = Logger(subsystem: "com.hmake98.HealthSync", category: "HealthKitService")
 
 final class HealthKitService {
     static let shared = HealthKitService()
@@ -16,7 +19,7 @@ final class HealthKitService {
             .oxygenSaturation, .bloodPressureSystolic, .bloodPressureDiastolic,
             .stepCount, .distanceWalkingRunning, .activeEnergyBurned,
             .appleExerciseTime, .appleStandTime, .flightsClimbed,
-            .respiratoryRate, .walkingHeartRateAverage, .vo2Max
+            .respiratoryRate, .walkingHeartRateAverage, .vo2Max,
         ]
         for id in quantityIDs {
             types.insert(HKQuantityType(id))
@@ -47,11 +50,21 @@ final class HealthKitService {
         for type in observedTypes {
             let query = HKObserverQuery(sampleType: type, predicate: nil) { _, completionHandler, error in
                 defer { completionHandler() } // release HealthKit's background time immediately
-                guard error == nil else { return }
+                if let error {
+                    hkLogger.error("HKObserverQuery error for \(type.identifier): \(error)")
+                    return
+                }
+                hkLogger.info("HealthKit background delivery fired for \(type.identifier)")
                 onNewData()
             }
             store.execute(query)
-            store.enableBackgroundDelivery(for: type, frequency: .immediate) { _, _ in }
+            store.enableBackgroundDelivery(for: type, frequency: .immediate) { success, error in
+                if let error {
+                    hkLogger.error("enableBackgroundDelivery failed for \(type.identifier): \(error)")
+                } else {
+                    hkLogger.info("Background delivery enabled for \(type.identifier): \(success)")
+                }
+            }
         }
     }
 
@@ -64,6 +77,9 @@ final class HealthKitService {
         let today = Calendar.current.startOfDay(for: Date())
         let now = Date()
         let bpm = HKUnit.count().unitDivided(by: .minute())
+        // mL/(kg·min) — the standard VO2 Max unit
+        let vo2Unit = HKUnit.literUnit(with: .milli)
+            .unitDivided(by: HKUnit.gramUnit(with: .kilo).unitMultiplied(by: .minute()))
 
         async let steps = fetchTodaySum(.stepCount, unit: .count(), start: today, end: now)
         async let distance = fetchTodaySum(.distanceWalkingRunning, unit: .meter(), start: today, end: now)
@@ -76,8 +92,11 @@ final class HealthKitService {
         async let hrv = fetchLatestSampleWithDate(.heartRateVariabilitySDNN, unit: .secondUnit(with: .milli))
         async let spo2 = fetchLatestSampleWithDate(.oxygenSaturation, unit: .percent())
         async let respRate = fetchLatestSampleWithDate(.respiratoryRate, unit: bpm)
+        async let walkingHR = fetchLatestSampleWithDate(.walkingHeartRateAverage, unit: bpm)
+        async let vo2 = fetchLatestSampleWithDate(.vo2Max, unit: vo2Unit)
         async let hrSamples = fetchHeartRateSamples(hours: 8)
         async let sleep = fetchLastNightSleep()
+        async let sleepConsistency = fetchSleepConsistency()
         async let workouts = fetchTodayWorkouts()
 
         data.steps = Int(await steps)
@@ -87,16 +106,19 @@ final class HealthKitService {
         data.standHours = Int(await standHours)
         data.flightsClimbed = Int(await flights)
 
-        if let hr = await currentHR   { data.heartRate        = TimedValue(value: hr.value, measuredAt: hr.measuredAt) }
-        if let rh = await restingHR   { data.restingHeartRate = TimedValue(value: rh.value, measuredAt: rh.measuredAt) }
-        if let hv = await hrv         { data.hrv              = TimedValue(value: hv.value, measuredAt: hv.measuredAt) }
+        if let hr  = await currentHR  { data.heartRate           = TimedValue(value: hr.value,          measuredAt: hr.measuredAt) }
+        if let rh  = await restingHR  { data.restingHeartRate    = TimedValue(value: rh.value,          measuredAt: rh.measuredAt) }
+        if let hv  = await hrv        { data.hrv                 = TimedValue(value: hv.value,          measuredAt: hv.measuredAt) }
         // oxygenSaturation returns 0–1 fraction; convert to 0–100 %
-        if let o2 = await spo2        { data.bloodOxygen      = TimedValue(value: o2.value * 100, measuredAt: o2.measuredAt) }
-        if let rr = await respRate    { data.respiratoryRate  = TimedValue(value: rr.value, measuredAt: rr.measuredAt) }
+        if let o2  = await spo2       { data.bloodOxygen         = TimedValue(value: o2.value * 100,    measuredAt: o2.measuredAt) }
+        if let rr  = await respRate   { data.respiratoryRate     = TimedValue(value: rr.value,          measuredAt: rr.measuredAt) }
+        if let whr = await walkingHR  { data.walkingHeartRateAvg = TimedValue(value: whr.value,         measuredAt: whr.measuredAt) }
+        if let v2  = await vo2        { data.vo2Max              = TimedValue(value: v2.value,           measuredAt: v2.measuredAt) }
 
-        data.heartRateSamples = await hrSamples
-        data.sleepSummary = await sleep
-        data.workouts = await workouts
+        data.heartRateSamples   = await hrSamples
+        data.sleepSummary       = await sleep
+        data.sleepConsistency   = await sleepConsistency
+        data.workouts           = await workouts
         data.isLoading = false
         return data
     }
@@ -208,6 +230,67 @@ final class HealthKitService {
         }
     }
 
+    // Fetches the last 8 nights of sleep, extracts bedtimes, and computes the
+    // standard deviation so the caller can display a schedule consistency label.
+    private func fetchSleepConsistency() async -> SleepConsistency? {
+        await withCheckedContinuation { continuation in
+            let now = Date()
+            let eightDaysAgo = Calendar.current.date(byAdding: .day, value: -8, to: now) ?? now
+            let predicate = HKQuery.predicateForSamples(withStart: eightDaysAgo, end: now)
+            let sort = NSSortDescriptor(key: HKSampleSortIdentifierStartDate, ascending: true)
+            let query = HKSampleQuery(
+                sampleType: HKCategoryType(.sleepAnalysis),
+                predicate: predicate,
+                limit: HKObjectQueryNoLimit,
+                sortDescriptors: [sort]
+            ) { _, samples, _ in
+                guard let samples = samples as? [HKCategorySample], !samples.isEmpty else {
+                    continuation.resume(returning: nil)
+                    return
+                }
+                // Group segments into distinct nights: a gap of >3 h between segments = new night.
+                var nights: [[HKCategorySample]] = []
+                var current: [HKCategorySample] = []
+                for sample in samples {
+                    if let last = current.last,
+                       sample.startDate.timeIntervalSince(last.endDate) > 3 * 3600 {
+                        if !current.isEmpty { nights.append(current) }
+                        current = [sample]
+                    } else {
+                        current.append(sample)
+                    }
+                }
+                if !current.isEmpty { nights.append(current) }
+
+                let cal = Calendar.current
+                // Extract bedtime = first actual sleep sample (not just inBed) each night.
+                let bedtimeMinutes: [Double] = nights.compactMap { night in
+                    let sleepValues = Set([1, 3, 4, 5]) // asleepUnspecified, deep, core, REM
+                    guard let first = night.first(where: { sleepValues.contains($0.value) }) else { return nil }
+                    let comps = cal.dateComponents([.hour, .minute], from: first.startDate)
+                    var mins = Double((comps.hour ?? 0) * 60 + (comps.minute ?? 0))
+                    // Normalize post-midnight bedtimes (0–360 min) to negatives so variance
+                    // doesn't treat "11:50 PM" and "12:10 AM" as maximally different.
+                    if mins < 360 { mins -= 1440 }
+                    return mins
+                }
+
+                guard bedtimeMinutes.count >= 3 else {
+                    continuation.resume(returning: nil)
+                    return
+                }
+
+                let mean = bedtimeMinutes.reduce(0, +) / Double(bedtimeMinutes.count)
+                let variance = bedtimeMinutes.map { ($0 - mean) * ($0 - mean) }.reduce(0, +) / Double(bedtimeMinutes.count)
+                continuation.resume(returning: SleepConsistency(
+                    nightsAnalyzed: bedtimeMinutes.count,
+                    bedtimeVarianceMinutes: variance.squareRoot()
+                ))
+            }
+            store.execute(query)
+        }
+    }
+
     private static func sleepStageString(from value: Int) -> String {
         switch HKCategoryValueSleepAnalysis(rawValue: value) {
         case .inBed: return SleepStageType.inBed
@@ -269,7 +352,9 @@ final class HealthKitService {
             (.bloodPressureSystolic,   VitalType.bloodPressureSystolic,   .millimeterOfMercury(), 1),
             (.bloodPressureDiastolic,  VitalType.bloodPressureDiastolic,  .millimeterOfMercury(), 1),
             (.respiratoryRate,         VitalType.respiratoryRate,         bpm,                    1),
-            (.walkingHeartRateAverage, VitalType.walkingHeartRateAverage, bpm,                    1),
+            (.walkingHeartRateAverage, VitalType.walkingHeartRateAverage, bpm,                         1),
+            // VO2 max is estimated weekly by Apple Watch; unit is mL/min/kg
+            (.vo2Max,                  VitalType.vo2Max,                  HKUnit(from: "ml/kg/min"),   1),
         ]
 
         for (typeID, typeName, unit, multiplier) in types {

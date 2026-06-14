@@ -1,5 +1,8 @@
 import Foundation
 import BackgroundTasks
+import os
+
+private let logger = Logger(subsystem: "com.hmake98.HealthSync", category: "SyncService")
 
 @MainActor
 @Observable
@@ -27,6 +30,7 @@ final class SyncService {
     func syncNow() async {
         guard !isSyncing else { return }
         isSyncing = true
+        logger.info("syncNow started")
 
         var log = SyncLog(type: .full)
         logStore.append(log)
@@ -125,29 +129,47 @@ final class SyncService {
         logStore.update(log)
         recentLogs = Array(logStore.load().suffix(20).reversed())
         isSyncing = false
+        logger.info("syncNow finished — status: \(log.status.rawValue), records: \(totalSynced)")
     }
 
     // MARK: - Background Task Scheduling
 
     func scheduleBackgroundSync() {
-        guard settings.syncIntervalMinutes > 0 else { return }
+        guard settings.syncIntervalMinutes > 0 else {
+            logger.info("scheduleBackgroundSync skipped — manual-only mode")
+            return
+        }
         let request = BGAppRefreshTaskRequest(identifier: Self.backgroundTaskIdentifier)
         request.earliestBeginDate = Date(timeIntervalSinceNow: Double(settings.syncIntervalMinutes) * 60)
-        try? BGTaskScheduler.shared.submit(request)
+        do {
+            try BGTaskScheduler.shared.submit(request)
+            logger.info("Scheduled background sync in \(self.settings.syncIntervalMinutes) min")
+        } catch {
+            logger.error("Failed to schedule background sync: \(error)")
+        }
     }
 
     // Schedule a background task to run as soon as possible (called by HealthKit observers).
     func scheduleImmediateBackgroundSync() {
         let request = BGAppRefreshTaskRequest(identifier: Self.backgroundTaskIdentifier)
         request.earliestBeginDate = nil // run ASAP
-        try? BGTaskScheduler.shared.submit(request)
+        do {
+            try BGTaskScheduler.shared.submit(request)
+            logger.info("Scheduled immediate background sync (HealthKit trigger)")
+        } catch {
+            logger.error("Failed to schedule immediate background sync: \(error)")
+        }
     }
 
     // Register HKObserverQuery so iOS wakes the app when health data changes.
     // Safe to call on every launch — guarded by observersRegistered flag.
     func setupBackgroundObservers() {
-        guard !observersRegistered, HealthKitService.isAvailable else { return }
+        guard !observersRegistered, HealthKitService.isAvailable else {
+            logger.debug("setupBackgroundObservers skipped (already registered or HK unavailable)")
+            return
+        }
         observersRegistered = true
+        logger.info("Registering HealthKit background observers")
         HealthKitService.shared.enableBackgroundDelivery {
             // Called on a HealthKit background thread — hop to main actor.
             Task { @MainActor in
@@ -157,16 +179,19 @@ final class SyncService {
     }
 
     nonisolated func handleBackgroundSync(task: BGAppRefreshTask) {
+        logger.info("Background task started: \(Self.backgroundTaskIdentifier)")
         let syncTask = Task { @MainActor in
             SyncService.shared.setupBackgroundObservers()
             await SyncService.shared.syncNow()
             SyncService.shared.scheduleBackgroundSync()
             // Guard against calling setTaskCompleted after the expiration handler already fired.
             if !Task.isCancelled {
+                logger.info("Background task completed successfully")
                 task.setTaskCompleted(success: true)
             }
         }
         task.expirationHandler = {
+            logger.warning("Background task expired before completion — rescheduling")
             syncTask.cancel()
             // Keep the chain alive even when this run expired.
             Task { @MainActor in

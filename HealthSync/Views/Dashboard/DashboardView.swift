@@ -1,5 +1,31 @@
 import SwiftUI
 
+// MARK: - HealthStatus
+
+private enum HealthStatus {
+    case optimal, good, fair, poor
+
+    var label: String {
+        switch self {
+        case .optimal: return "Optimal"
+        case .good:    return "Good"
+        case .fair:    return "Fair"
+        case .poor:    return "Poor"
+        }
+    }
+
+    var color: Color {
+        switch self {
+        case .optimal: return .green
+        case .good:    return Color(red: 0.2, green: 0.55, blue: 1.0)
+        case .fair:    return .orange
+        case .poor:    return .red
+        }
+    }
+}
+
+// MARK: - DashboardView
+
 struct DashboardView: View {
     @State private var data = DashboardData()
     @State private var isRefreshing = false
@@ -9,25 +35,48 @@ struct DashboardView: View {
     var body: some View {
         NavigationStack {
             ScrollView {
-                LazyVStack(spacing: 12) {
+                VStack(spacing: 0) {
                     syncStatusRow
-                    activityCard
-                    if data.hasHeartData {
-                        heartCard
+                        .padding(.horizontal, 16)
+                        .padding(.top, 8)
+                        .padding(.bottom, 16)
+
+                    // MARK: Cardiovascular
+                    SectionHeader("Cardiovascular")
+                    rhrCard
+                        .padding(.horizontal, 16)
+                    HStack(alignment: .top, spacing: 12) {
+                        hrvCard
+                        walkingHRCard
                     }
-                    if data.hasVitals {
-                        vitalsCard
+                    .padding(.horizontal, 16)
+                    .padding(.top, 12)
+                    vo2MaxCard
+                        .padding(.horizontal, 16)
+                        .padding(.top, 12)
+
+                    // MARK: Sleep
+                    SectionHeader("Sleep")
+                    sleepHealthCard
+                        .padding(.horizontal, 16)
+
+                    // MARK: Movement
+                    SectionHeader("Movement")
+                    HStack(alignment: .top, spacing: 12) {
+                        stepsCard
+                        activeEnergyCard
                     }
-                    if let sleep = data.sleepSummary {
-                        sleepCard(sleep)
-                    }
+                    .padding(.horizontal, 16)
+
+                    // MARK: Workouts
                     if !data.workouts.isEmpty {
+                        SectionHeader("Workouts")
                         workoutsCard
+                            .padding(.horizontal, 16)
                     }
+
+                    Spacer().frame(height: 40)
                 }
-                .padding(.horizontal, 16)
-                .padding(.top, 8)
-                .padding(.bottom, 32)
             }
             .navigationTitle(greetingTitle)
             .navigationBarTitleDisplayMode(.large)
@@ -55,22 +104,13 @@ struct DashboardView: View {
         }
     }
 
-    // MARK: - Greeting
-
-    private var greetingTitle: String {
-        let hour = Calendar.current.component(.hour, from: Date())
-        if hour < 12 { return "Good Morning" }
-        if hour < 17 { return "Good Afternoon" }
-        return "Good Evening"
-    }
-
     // MARK: - Sync Status Row
 
     private var syncStatusRow: some View {
-        HStack(spacing: 10) {
+        HStack(spacing: 8) {
             Circle()
                 .fill(syncDotColor)
-                .frame(width: 8, height: 8)
+                .frame(width: 7, height: 7)
             if syncService.isSyncing {
                 Text("Syncing…").font(.caption).foregroundStyle(.secondary)
             } else if let last = syncService.lastSyncDate {
@@ -81,176 +121,248 @@ struct DashboardView: View {
             Spacer()
             Text(Date(), style: .date).font(.caption2).foregroundStyle(.tertiary)
         }
-        .padding(.horizontal, 4)
     }
 
     private var syncDotColor: Color {
         if syncService.isSyncing { return .blue }
         guard let last = syncService.lastSyncDate else { return .secondary }
         let age = Date().timeIntervalSince(last)
-        if age < 3600 { return .green }
+        if age < 3600  { return .green }
         if age < 14400 { return .yellow }
         return .orange
     }
 
-    // MARK: - Activity Card
+    // MARK: - Resting Heart Rate Card
 
-    private var activityCard: some View {
-        DashCard(title: "Activity", icon: "flame.fill", iconColor: .red) {
-            VStack(spacing: 12) {
-                HStack(spacing: 0) {
-                    ActivityRingsView(
-                        moveProgress: data.moveProgress,
-                        exerciseProgress: data.exerciseProgress,
-                        standProgress: data.standProgress,
-                        moveKcal: data.activeEnergyKcal,
-                        exerciseMinutes: data.exerciseMinutes,
-                        standHours: data.standHours,
-                        moveGoal: data.moveGoal,
-                        exerciseGoal: data.exerciseGoal,
-                        standGoal: data.standGoal
-                    )
-                    Spacer()
-                }
-                Divider()
-                HStack(spacing: 16) {
-                    StatPill(label: "Steps", value: data.steps.formatted(), icon: "figure.walk")
-                    if data.distanceMeters > 0 {
-                        StatPill(label: "Distance", value: String(format: "%.1f km", data.distanceMeters / 1000), icon: "mappin")
-                    }
-                    if data.flightsClimbed > 0 {
-                        StatPill(label: "Flights", value: "\(data.flightsClimbed)", icon: "stairs")
-                    }
-                    Spacer()
-                }
-            }
-        }
+    private var rhrCard: some View {
+        let rhr = data.freshRestingHR
+        return MetricCard(
+            icon: "heart.fill",
+            iconColor: .red,
+            title: "Resting Heart Rate",
+            value: rhr.map { "\(Int($0.value))" } ?? "--",
+            unit: rhr != nil ? "BPM" : "",
+            description: "Cardiovascular fitness · recovery · stress",
+            status: rhr.map { rhrStatus($0.value) },
+            age: rhr?.ageString
+        )
     }
 
-    // MARK: - Heart Card
-
-    private var heartCard: some View {
-        DashCard(title: "Heart", icon: "heart.fill", iconColor: .red) {
-            VStack(spacing: 10) {
-                HStack(spacing: 12) {
-                    if let hr = data.freshHeartRate {
-                        HeartMetricTile(
-                            label: "Heart Rate",
-                            value: "\(Int(hr.value))",
-                            unit: "BPM",
-                            age: hr.ageString,
-                            color: heartRateColor(hr.value)
-                        )
-                    }
-                    if let rhr = data.freshRestingHR {
-                        HeartMetricTile(
-                            label: "Resting HR",
-                            value: "\(Int(rhr.value))",
-                            unit: "BPM",
-                            age: rhr.ageString,
-                            color: .secondary
-                        )
-                    }
-                    if let hrv = data.freshHRV {
-                        HeartMetricTile(
-                            label: "HRV",
-                            value: "\(Int(hrv.value))",
-                            unit: "ms",
-                            age: hrv.ageString,
-                            color: hrv.value >= 50 ? .green : hrv.value >= 30 ? .orange : .red
-                        )
-                    }
-                    Spacer()
-                }
-                if !data.heartRateSamples.isEmpty {
-                    Divider()
-                    HeartRateChartView(
-                        samples: data.heartRateSamples,
-                        current: data.currentHeartRate,
-                        min: data.heartRateMin,
-                        max: data.heartRateMax,
-                        avg: data.heartRateAvg,
-                        resting: data.freshRestingHR?.value ?? 0
-                    )
-                }
-            }
-        }
+    private func rhrStatus(_ bpm: Double) -> HealthStatus {
+        if bpm < 40 || bpm > 100 { return .poor }
+        if bpm <= 60              { return .optimal }
+        if bpm <= 80              { return .good }
+        return .fair
     }
 
-    private func heartRateColor(_ bpm: Double) -> Color {
-        if bpm < 50 || bpm > 120 { return .red }
-        if bpm > 100 { return .orange }
-        return .pink
+    // MARK: - HRV Card
+
+    private var hrvCard: some View {
+        let hrv = data.freshHRV
+        return CompactMetricCard(
+            icon: "waveform.path.ecg",
+            iconColor: .purple,
+            title: "HRV",
+            value: hrv.map { "\(Int($0.value))" } ?? "--",
+            unit: hrv != nil ? "ms" : "",
+            description: "Recovery · nervous system balance · stress",
+            status: hrv.map { hrvStatus($0.value) },
+            age: hrv?.ageString
+        )
     }
 
-    // MARK: - Vitals Card
+    private func hrvStatus(_ ms: Double) -> HealthStatus {
+        if ms >= 55 { return .optimal }
+        if ms >= 40 { return .good }
+        if ms >= 25 { return .fair }
+        return .poor
+    }
 
-    private var vitalsCard: some View {
-        DashCard(title: "Vitals", icon: "waveform.path.ecg", iconColor: .teal) {
-            HStack(spacing: 16) {
-                if let o2 = data.freshBloodOxygen {
-                    VitalMetricTile(
-                        icon: "lungs.fill",
-                        label: "Blood O₂",
-                        value: String(format: "%.0f%%", o2.value),
-                        age: o2.ageString,
-                        note: o2.value >= 95 ? "Normal" : "Below normal",
-                        color: o2.value >= 95 ? .blue : .orange
-                    )
-                }
-                if let rr = data.freshRespiratoryRate {
-                    VitalMetricTile(
-                        icon: "wind",
-                        label: "Breathing",
-                        value: String(format: "%.0f", rr.value),
-                        age: rr.ageString,
-                        note: "breaths/min",
-                        color: .teal
-                    )
-                }
-                Spacer()
-            }
-        }
+    // MARK: - Walking HR Average Card
+
+    private var walkingHRCard: some View {
+        let whr = data.freshWalkingHRAvg
+        return CompactMetricCard(
+            icon: "figure.walk",
+            iconColor: .teal,
+            title: "Walking HR Avg",
+            value: whr.map { "\(Int($0.value))" } ?? "--",
+            unit: whr != nil ? "BPM" : "",
+            description: "Cardiovascular efficiency",
+            status: whr.map { walkingHRStatus($0.value) },
+            age: whr?.ageString
+        )
+    }
+
+    private func walkingHRStatus(_ bpm: Double) -> HealthStatus {
+        if bpm < 70  { return .optimal }
+        if bpm < 85  { return .good }
+        if bpm < 100 { return .fair }
+        return .poor
+    }
+
+    // MARK: - VO2 Max Card
+
+    private var vo2MaxCard: some View {
+        let vo2 = data.freshVo2Max
+        return MetricCard(
+            icon: "lungs.fill",
+            iconColor: .cyan,
+            title: "Cardio Fitness  ·  VO₂ Max",
+            value: vo2.map { String(format: "%.1f", $0.value) } ?? "--",
+            unit: vo2 != nil ? "mL/kg/min" : "",
+            description: "Strong predictor of long-term health & longevity",
+            status: vo2.map { vo2Status($0.value) },
+            age: vo2?.ageString
+        )
+    }
+
+    private func vo2Status(_ ml: Double) -> HealthStatus {
+        if ml >= 50 { return .optimal }
+        if ml >= 38 { return .good }
+        if ml >= 28 { return .fair }
+        return .poor
     }
 
     // MARK: - Sleep Card
 
-    private func sleepCard(_ sleep: SleepSummary) -> some View {
+    @ViewBuilder
+    private var sleepHealthCard: some View {
         DashCard(title: "Sleep", icon: "moon.fill", iconColor: .indigo) {
-            VStack(spacing: 10) {
-                HStack {
-                    VStack(alignment: .leading, spacing: 2) {
-                        HStack(alignment: .firstTextBaseline, spacing: 4) {
-                            Text(String(format: "%.1f", sleep.totalAsleepHours))
-                                .font(.system(size: 28, weight: .bold, design: .rounded))
-                            Text("hrs").font(.subheadline).foregroundStyle(.secondary)
+            if let sleep = data.sleepSummary {
+                VStack(alignment: .leading, spacing: 14) {
+                    // Duration row
+                    HStack(alignment: .top) {
+                        VStack(alignment: .leading, spacing: 6) {
+                            HStack(alignment: .center, spacing: 8) {
+                                Text(sleepDurationLabel(sleep))
+                                    .font(.system(size: 30, weight: .bold, design: .rounded))
+                                if let status = sleepStatus(sleep.totalAsleepHours) {
+                                    StatusBadge(status: status)
+                                }
+                            }
+                            Text("Recovery foundation")
+                                .font(.system(size: 12))
+                                .foregroundStyle(.secondary)
                         }
-                        Text(sleep.quality)
-                            .font(.caption)
-                            .foregroundStyle(sleep.qualityColor)
-                    }
-                    Spacer()
-                    if let bed = sleep.bedtime, let wake = sleep.wakeTime {
-                        VStack(alignment: .trailing, spacing: 2) {
-                            Text(bed, format: .dateTime.hour().minute())
-                                .font(.caption2).foregroundStyle(.secondary)
-                            Image(systemName: "arrow.down")
-                                .font(.caption2).foregroundStyle(.tertiary)
-                            Text(wake, format: .dateTime.hour().minute())
-                                .font(.caption2).foregroundStyle(.secondary)
+                        Spacer()
+                        if let bed = sleep.bedtime, let wake = sleep.wakeTime {
+                            VStack(alignment: .trailing, spacing: 4) {
+                                Label(bed.formatted(date: .omitted, time: .shortened), systemImage: "moon.zzz")
+                                    .font(.caption2).foregroundStyle(.secondary)
+                                Image(systemName: "arrow.down")
+                                    .font(.caption2).foregroundStyle(.tertiary)
+                                Label(wake.formatted(date: .omitted, time: .shortened), systemImage: "sun.horizon")
+                                    .font(.caption2).foregroundStyle(.secondary)
+                            }
                         }
                     }
+
+                    // Consistency row
+                    if let consistency = data.sleepConsistency {
+                        Divider()
+                        VStack(alignment: .leading, spacing: 6) {
+                            HStack(spacing: 6) {
+                                Image(systemName: "calendar.badge.clock")
+                                    .font(.system(size: 11, weight: .semibold))
+                                    .foregroundStyle(.secondary)
+                                Text("CONSISTENCY")
+                                    .font(.system(size: 11, weight: .semibold))
+                                    .foregroundStyle(.secondary)
+                                    .tracking(0.5)
+                                Spacer()
+                                Text("\(consistency.nightsAnalyzed) nights")
+                                    .font(.caption2)
+                                    .foregroundStyle(.tertiary)
+                            }
+                            Text(consistency.label)
+                                .font(.system(size: 20, weight: .semibold, design: .rounded))
+                                .foregroundStyle(consistency.color)
+                            Text("Often more important than total sleep duration")
+                                .font(.system(size: 12))
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+
+                    // Stage bar
+                    Divider()
+                    SleepStagesView(summary: sleep)
                 }
-                Divider()
-                SleepStagesView(summary: sleep)
+            } else {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("--")
+                        .font(.system(size: 30, weight: .bold, design: .rounded))
+                        .foregroundStyle(.quaternary)
+                    Text("No sleep data recorded for last night")
+                        .font(.system(size: 12))
+                        .foregroundStyle(.secondary)
+                }
             }
         }
+    }
+
+    private func sleepDurationLabel(_ sleep: SleepSummary) -> String {
+        let h = Int(sleep.totalAsleepHours)
+        let m = Int((sleep.totalAsleepHours - Double(h)) * 60)
+        return m > 0 ? "\(h)h \(m)m" : "\(h)h"
+    }
+
+    private func sleepStatus(_ hours: Double) -> HealthStatus? {
+        guard hours > 0 else { return nil }
+        if hours >= 7 && hours <= 9 { return .optimal }
+        if hours >= 6               { return .good }
+        if hours >= 5               { return .fair }
+        return .poor
+    }
+
+    // MARK: - Daily Steps Card
+
+    private var stepsCard: some View {
+        CompactMetricCard(
+            icon: "shoeprints.fill",
+            iconColor: .green,
+            title: "Daily Steps",
+            value: data.steps > 0 ? data.steps.formatted() : "--",
+            unit: "",
+            description: "Activity baseline",
+            status: data.steps > 0 ? stepsStatus(data.steps) : nil,
+            age: nil
+        )
+    }
+
+    private func stepsStatus(_ steps: Int) -> HealthStatus {
+        if steps >= 10000 { return .optimal }
+        if steps >= 7500  { return .good }
+        if steps >= 5000  { return .fair }
+        return .poor
+    }
+
+    // MARK: - Active Energy Card
+
+    private var activeEnergyCard: some View {
+        CompactMetricCard(
+            icon: "flame.fill",
+            iconColor: .orange,
+            title: "Active Energy",
+            value: data.activeEnergyKcal > 0 ? "\(Int(data.activeEnergyKcal))" : "--",
+            unit: data.activeEnergyKcal > 0 ? "Cal" : "",
+            description: "Daily movement load",
+            status: data.activeEnergyKcal > 0 ? energyStatus(data.activeEnergyKcal) : nil,
+            age: nil
+        )
+    }
+
+    private func energyStatus(_ kcal: Double) -> HealthStatus {
+        if kcal >= 600 { return .optimal }
+        if kcal >= 400 { return .good }
+        if kcal >= 200 { return .fair }
+        return .poor
     }
 
     // MARK: - Workouts Card
 
     private var workoutsCard: some View {
-        DashCard(title: "Workouts", icon: "figure.run", iconColor: .green) {
+        DashCard(title: "Today", icon: "figure.run", iconColor: .green) {
             VStack(spacing: 10) {
                 ForEach(data.workouts) { workout in
                     WorkoutRow(workout: workout)
@@ -271,6 +383,177 @@ struct DashboardView: View {
         isRefreshing = true
         await loadData()
         isRefreshing = false
+    }
+
+    private var greetingTitle: String {
+        let hour = Calendar.current.component(.hour, from: Date())
+        if hour < 12 { return "Good Morning" }
+        if hour < 17 { return "Good Afternoon" }
+        return "Good Evening"
+    }
+}
+
+// MARK: - Section Header
+
+private struct SectionHeader: View {
+    let title: String
+    init(_ title: String) { self.title = title }
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Text(title.uppercased())
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(.secondary)
+                .tracking(0.8)
+            Rectangle()
+                .frame(height: 0.5)
+                .foregroundStyle(Color.secondary.opacity(0.25))
+        }
+        .padding(.horizontal, 16)
+        .padding(.top, 28)
+        .padding(.bottom, 12)
+    }
+}
+
+// MARK: - StatusBadge
+
+private struct StatusBadge: View {
+    let status: HealthStatus
+
+    var body: some View {
+        HStack(spacing: 4) {
+            Circle()
+                .fill(status.color)
+                .frame(width: 5, height: 5)
+            Text(status.label)
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(status.color)
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 3)
+        .background(status.color.opacity(0.12), in: Capsule())
+    }
+}
+
+// MARK: - MetricCard (full width)
+
+private struct MetricCard: View {
+    let icon: String
+    let iconColor: Color
+    let title: String
+    let value: String
+    let unit: String
+    let description: String
+    let status: HealthStatus?
+    var age: String? = nil
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 6) {
+                Image(systemName: icon)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(status != nil ? iconColor : iconColor.opacity(0.35))
+                Text(title.uppercased())
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                    .tracking(0.5)
+                Spacer()
+                if let age {
+                    Text(age)
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                }
+            }
+
+            HStack(alignment: .firstTextBaseline, spacing: 0) {
+                Text(value)
+                    .font(.system(size: 34, weight: .bold, design: .rounded))
+                    .foregroundStyle(status != nil ? .primary : .quaternary)
+                if !unit.isEmpty {
+                    Text(" \(unit)")
+                        .font(.system(size: 14))
+                        .foregroundStyle(.secondary)
+                        .padding(.leading, 2)
+                }
+                Spacer()
+                if let status {
+                    StatusBadge(status: status)
+                }
+            }
+
+            Text(description)
+                .font(.system(size: 12))
+                .foregroundStyle(.secondary)
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+    }
+}
+
+// MARK: - CompactMetricCard (half width, used in 2-column HStack)
+
+private struct CompactMetricCard: View {
+    let icon: String
+    let iconColor: Color
+    let title: String
+    let value: String
+    let unit: String
+    let description: String
+    let status: HealthStatus?
+    var age: String? = nil
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 5) {
+                Image(systemName: icon)
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(status != nil ? iconColor : iconColor.opacity(0.35))
+                Text(title.uppercased())
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                    .tracking(0.4)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
+                Spacer()
+            }
+
+            Spacer().frame(height: 10)
+
+            HStack(alignment: .firstTextBaseline, spacing: 3) {
+                Text(value)
+                    .font(.system(size: 26, weight: .bold, design: .rounded))
+                    .foregroundStyle(status != nil ? .primary : .quaternary)
+                if !unit.isEmpty {
+                    Text(unit)
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            Spacer().frame(height: 6)
+
+            if let status {
+                StatusBadge(status: status)
+            }
+
+            Spacer(minLength: 10)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(description)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                if let age {
+                    Text(age)
+                        .font(.system(size: 10))
+                        .foregroundStyle(.tertiary)
+                }
+            }
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
     }
 }
 
@@ -302,87 +585,6 @@ private struct DashCard<Content: View>: View {
     }
 }
 
-// MARK: - Heart metric tile (with measurement age)
-
-private struct HeartMetricTile: View {
-    let label: String
-    let value: String
-    let unit: String
-    let age: String
-    let color: Color
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(label)
-                .font(.system(size: 10, weight: .medium))
-                .foregroundStyle(.secondary)
-            HStack(alignment: .firstTextBaseline, spacing: 3) {
-                Text(value)
-                    .font(.system(size: 20, weight: .bold, design: .rounded))
-                    .foregroundStyle(color)
-                Text(unit)
-                    .font(.system(size: 10))
-                    .foregroundStyle(.secondary)
-            }
-            Text(age)
-                .font(.system(size: 10))
-                .foregroundStyle(.tertiary)
-        }
-    }
-}
-
-// MARK: - Vital metric tile (with measurement age)
-
-private struct VitalMetricTile: View {
-    let icon: String
-    let label: String
-    let value: String
-    let age: String
-    let note: String
-    let color: Color
-
-    var body: some View {
-        HStack(spacing: 10) {
-            Image(systemName: icon)
-                .font(.system(size: 20))
-                .foregroundStyle(color)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(label)
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(.secondary)
-                Text(value)
-                    .font(.system(size: 18, weight: .bold, design: .rounded))
-                HStack(spacing: 4) {
-                    Text(note).font(.system(size: 11)).foregroundStyle(.secondary)
-                    Text("·").foregroundStyle(.tertiary)
-                    Text(age).font(.system(size: 11)).foregroundStyle(.tertiary)
-                }
-            }
-        }
-    }
-}
-
-// MARK: - StatPill
-
-private struct StatPill: View {
-    let label: String
-    let value: String
-    let icon: String
-
-    var body: some View {
-        VStack(spacing: 2) {
-            Image(systemName: icon)
-                .font(.system(size: 12))
-                .foregroundStyle(.secondary)
-            Text(value)
-                .font(.system(size: 13, weight: .semibold, design: .rounded))
-            Text(label)
-                .font(.system(size: 10))
-                .foregroundStyle(.secondary)
-        }
-    }
-}
-
 // MARK: - Workout Row
 
 private struct WorkoutRow: View {
@@ -410,16 +612,6 @@ private struct WorkoutRow: View {
                 }
             }
         }
-    }
-}
-
-// MARK: - Date helper
-
-private extension Date {
-    var relativeString: String {
-        let f = RelativeDateTimeFormatter()
-        f.unitsStyle = .abbreviated
-        return f.localizedString(for: self, relativeTo: Date())
     }
 }
 

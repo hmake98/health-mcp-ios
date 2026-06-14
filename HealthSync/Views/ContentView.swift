@@ -10,9 +10,16 @@ struct ContentView: View {
             mainTabs
                 .task { await setup() }
                 .onChange(of: scenePhase) { _, newPhase in
-                    if newPhase == .active {
-                        // Re-schedule on every foreground in case the task was consumed.
+                    switch newPhase {
+                    case .active:
+                        // Re-register observers in case the process was relaunched in background.
+                        syncService.setupBackgroundObservers()
+                    case .background:
+                        // Schedule right as the app enters background so the task is queued
+                        // even if the user never returns to the foreground.
                         syncService.scheduleBackgroundSync()
+                    default:
+                        break
                     }
                 }
         } else {
@@ -41,7 +48,9 @@ struct ContentView: View {
             try? await HealthKitService.shared.requestAuthorization()
             settings.hasRequestedHKAuthorization = true
         }
-        syncService.scheduleBackgroundSync()
+        // Observers and scheduling are driven by scenePhase changes (.active / .background).
+        // Kick off the first schedule + observer registration here for the initial launch.
         syncService.setupBackgroundObservers()
+        syncService.scheduleBackgroundSync()
     }
 }
