@@ -136,7 +136,7 @@ struct DashboardView: View {
 
     private var rhrCard: some View {
         let rhr = data.freshRestingHR
-        return MetricCard(
+        return HealthMetricCard(
             icon: "heart.fill",
             iconColor: .red,
             title: "Resting Heart Rate",
@@ -205,7 +205,7 @@ struct DashboardView: View {
 
     private var vo2MaxCard: some View {
         let vo2 = data.freshVo2Max
-        return MetricCard(
+        return HealthMetricCard(
             icon: "lungs.fill",
             iconColor: .cyan,
             title: "Cardio Fitness  ·  VO₂ Max",
@@ -435,9 +435,9 @@ private struct StatusBadge: View {
     }
 }
 
-// MARK: - MetricCard (full width)
+// MARK: - HealthMetricCard (full width)
 
-private struct MetricCard: View {
+private struct HealthMetricCard: View {
     let icon: String
     let iconColor: Color
     let title: String
