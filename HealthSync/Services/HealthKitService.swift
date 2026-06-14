@@ -353,8 +353,8 @@ final class HealthKitService {
             (.bloodPressureDiastolic,  VitalType.bloodPressureDiastolic,  .millimeterOfMercury(), 1),
             (.respiratoryRate,         VitalType.respiratoryRate,         bpm,                    1),
             (.walkingHeartRateAverage, VitalType.walkingHeartRateAverage, bpm,                         1),
-            // VO2 max is estimated weekly by Apple Watch; unit is mL/min/kg
-            (.vo2Max,                  VitalType.vo2Max,                  HKUnit(from: "ml/kg/min"),   1),
+            // VO2 max is estimated weekly by Apple Watch; unit is mL/(kg·min)
+            (.vo2Max, VitalType.vo2Max, HKUnit.literUnit(with: .milli).unitDivided(by: HKUnit.gramUnit(with: .kilo).unitMultiplied(by: .minute())), 1),
         ]
 
         for (typeID, typeName, unit, multiplier) in types {
